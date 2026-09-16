@@ -41,15 +41,26 @@ actually absent from the MCP tool list the server advertises.
 ### 1. EasyPanel
 1. New service → **App from Git**, this repo, path to compose file:
    `deploy/easypanel/docker-compose.yml`.
-2. Set `API_KEY` (generate with `openssl rand -hex 32` — see `.env.example`) and `TZ` as env
-   vars in EasyPanel's UI. Deploy will fail without `API_KEY`, on purpose.
+2. Set as env vars in EasyPanel's UI (deploy fails without these, on purpose):
+   - `API_KEY` — generate with `openssl rand -hex 32`
+   - `MCP_TRUSTED_HOSTS` — the public hostname you're about to create in step 2 below (e.g.
+     `mcp-whatsapp-ext.bomgado.net`). **This has to match exactly what you set the domain to**
+     — decide the hostname first, then fill this in, then deploy.
+   - `TZ` (optional, defaults to America/Sao_Paulo)
 3. Deploy. First build compiles the Go bridge, the Python MCP server, and the React web UI —
    expect several minutes.
 
 ### 2. Domain (only for the `whatsapp-mcp` service)
-In the service's Domains tab: add a domain, **Serviço Compose = `whatsapp-mcp`** (not
-`whatsapp-bridge`, not `web-ui` — this field is easy to leave empty, which silently breaks
-routing; we hit exactly that on the previous deployment), port **8081**, path `/mcp`.
+In the service's Domains tab: add a domain — same hostname as `MCP_TRUSTED_HOSTS` above —
+**Serviço Compose = `whatsapp-mcp`** (not `whatsapp-bridge`, not `web-ui` — this field is easy
+to leave empty, which silently breaks routing; we hit exactly that on the previous
+deployment), port **8081**, path `/mcp`.
+
+**Why `MCP_TRUSTED_HOSTS` exists at all:** upstream's MCP server rejects any request whose
+`Host` header isn't `localhost`/`127.0.0.1` — a DNS-rebinding protection that only
+auto-configures for loopback deployments, with no built-in way to allowlist a real domain.
+Fixed in this fork (`whatsapp-mcp-server/main.py`) by reading `MCP_TRUSTED_HOSTS`. Without it
+set to the right value, every request 421s, tunnel and Access notwithstanding.
 
 Do **not** add a public domain for `whatsapp-bridge` (8080) or `web-ui` (8090) — the bridge's
 REST API and the web UI have no auth of their own beyond the internal `API_KEY`, and pairing
