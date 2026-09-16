@@ -1,0 +1,29 @@
+# Extends the default gitleaks ruleset rather than replacing it.
+[extend]
+useDefault = true
+
+# The docs use placeholder credentials in example JSON payloads, e.g.
+#   "secret_token": "family-secret-123"
+# alongside https://api.example.com/... These are not real secrets, but the
+# generic-api-key rule flags them on every full-history scan — which is exactly
+# what the weekly scheduled run does, hence the recurring failure emails.
+# (The same placeholder also appears at the file's old path,
+# whatsapp-bridge/WEBHOOK_README.md, which is still reachable in git history.)
+#
+# This is expressed as a rule-scoped allowlist ([[rules]] + [rules.allowlist])
+# rather than a global [[allowlists]] block. That matters: gitleaks-action@v2
+# pins gitleaks 8.24.3, which does not honour a global allowlist using
+# regexTarget = "match" — so the previous config looked correct locally (8.30+)
+# while the scheduled scan kept failing. The rule-scoped form works on both.
+#
+# The allowlist is deliberately narrow: it matches the placeholder *values*
+# themselves rather than whole lines or file paths, so a genuine secret
+# committed to a Markdown file is still reported.
+[[rules]]
+id = "generic-api-key"
+[rules.allowlist]
+regexTarget = "secret"
+regexes = [
+  '''^(optional|new|family|emergency)-secret(-\d+)?$''',
+  '''^super_secret_key_123$''',
+]

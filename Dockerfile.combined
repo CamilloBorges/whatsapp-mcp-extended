@@ -1,0 +1,77 @@
+# Combined image: Go bridge + Python MCP server in one container, driven by the
+# combined entrypoint so the (stdio) MCP server supervises its own per-user
+# bridge. Intended to run under mcp-auth-wrapper (one spawn per user).
+#
+# Base is node:lts-slim (Debian/glibc) to match the homelab's Node base family
+# and give mcp-auth-wrapper a modern Node (it uses the built-in node:sqlite,
+# Node 22+). glibc (not alpine/musl) so the cgo-built Go bridge runs as-is.
+# Python comes from a uv-managed standalone interpreter, so it's independent of
+# whatever python3 the base ships.
+
+# --- stage 1: build the Go bridge -------------------------------------------
+FROM golang:latest AS bridge-builder
+ENV CGO_ENABLED=1
+ENV GO111MODULE=on
+WORKDIR /app
+COPY ./whatsapp-bridge /app/whatsapp-bridge
+WORKDIR /app/whatsapp-bridge
+RUN go mod download && go build -o whatsapp-bridge
+
+# --- stage 2: build the Python venv -----------------------------------------
+# Uses uv with its own standalone CPython, so the venv doesn't depend on the
+# runtime base's apt python. Copied wholesale into the runtime stage.
+FROM debian:bookworm-slim AS py-builder
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+WORKDIR /app
+COPY ./whatsapp-mcp-server/requirements.txt .
+# gradio* are only used by the local dev UI (gradio-main.py), not main.py.
+RUN grep -vE "^gradio" requirements.txt > requirements-docker.txt \
+    && uv python install 3.13 \
+    && uv venv --python 3.13 /opt/venv \
+    && uv pip install --python /opt/venv --no-cache -r requirements-docker.txt
+
+# --- stage 3: runtime --------------------------------------------------------
+# Bundles the Go bridge binary, the uv-built Python venv (+ its interpreter), and
+# mcp-auth-wrapper; the wrapper (entrypoint) handles OIDC and spawns one per-user
+# stdio MCP server per authenticated user. That server is run_server.py, which
+# supervises its own Go bridge (no bash entrypoint needed).
+FROM node:lts-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    sqlite3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python: the uv standalone interpreter + the venv built against it.
+COPY --from=py-builder /opt/python /opt/python
+COPY --from=py-builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Reuse the base image's existing non-root `node` user (uid/gid 1000).
+
+# Install mcp-auth-wrapper globally at build time (pinned), so startup needs no
+# npx fetch / network / writable npm cache. 2.0.0 adds profiles, so one person
+# can link several WhatsApp accounts (MCP_PROFILE_ID alongside MCP_USER_ID).
+RUN npm install -g mcp-auth-wrapper@2.0.1 && npm cache clean --force
+
+WORKDIR /app
+COPY --from=bridge-builder /app/whatsapp-bridge/whatsapp-bridge /app/whatsapp-bridge/whatsapp-bridge
+COPY ./whatsapp-mcp-server /app/whatsapp-mcp-server
+
+RUN chmod +x /app/whatsapp-bridge/whatsapp-bridge \
+    && mkdir -p /app/data \
+    && chown -R node:node /app
+
+USER node
+ENV HOME=/home/node
+# Per-user data (one store/<user>/ subdir each) lives under /app/data.
+VOLUME ["/app/data"]
+ENV DATA_ROOT=/app/data
+# The container runs mcp-auth-wrapper (configured via MCP_AUTH_WRAPPER_CONFIG),
+# which exposes streamable HTTP + OIDC on port 3000 and spawns the combined
+# entrypoint per user. The bridge listens only on loopback inside the container.
+EXPOSE 3000
+ENTRYPOINT ["mcp-auth-wrapper"]

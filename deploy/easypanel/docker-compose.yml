@@ -1,0 +1,116 @@
+# Deploy bundle for EasyPanel (Git-based Docker Compose import).
+#
+# Build context is the repo root (two levels up) — reuses Dockerfile.bridge / Dockerfile.mcp /
+# Dockerfile.web-ui and the whatsapp-bridge/whatsapp-mcp-server/whatsapp-web-ui source dirs
+# unmodified from upstream (domdomegg/whatsapp-mcp-extended).
+#
+# Differences from upstream's root docker-compose.yaml:
+# - No `ports:` publishing (upstream binds 127.0.0.1:xxxx for local dev). Only `expose` — this
+#   is meant to be reached over EasyPanel's internal `easypanel` overlay network, not the host.
+# - Shared session store is a named volume instead of a `./store` bind mount (more portable
+#   across EasyPanel's git-based build layout).
+# - `web-ui` is deployed but NOT meant to get a public domain — pairing is done via SSH
+#   (`make pair PHONE=+...` against the bridge) instead. Keeping it undeployed-but-present is
+#   a fallback if QR-based pairing is ever needed; see README.md.
+# - whatsapp-mcp is the ONLY service that should get an EasyPanel domain (that's the actual
+#   MCP endpoint). Same as the previous deploy: that domain must NOT be reachable without a
+#   Cloudflare Access policy in front of it — this app has no auth of its own on that port.
+
+services:
+  whatsapp-bridge:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.bridge
+      args:
+        UID: "1000"
+        GID: "1000"
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - API_KEY=${API_KEY:?set a fresh key in .env — see .env.example}
+      - DISABLE_AUTH_CHECK=false
+      - API_BIND_HOST=0.0.0.0
+    volumes:
+      - whatsapp-store:/app/whatsapp-bridge/store
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/api/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    expose:
+      - "8080"
+
+  whatsapp-mcp:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.mcp
+      args:
+        UID: "1000"
+        GID: "1000"
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - MCP_TRANSPORT=streamable-http
+      - HOST=0.0.0.0
+      - PORT=8081
+      # Least-privilege: read/discovery only. "core" toolset = search/list/get tools (all
+      # read_only in upstream's own annotations). Cherry-picked extras: get_setup_qr +
+      # setup_status (pairing/status, read_only) and download_media (read_only; send_file/
+      # send_audio_message live in the same "media" toolset but are NOT enabled here).
+      # No send/edit/delete/group-management/presence/blocklist/newsletter capability.
+      - WHATSAPP_MCP_TOOLSETS=core
+      - WHATSAPP_MCP_TOOLS=get_setup_qr,setup_status,download_media
+      - BRIDGE_HOST=whatsapp-bridge
+      - API_KEY=${API_KEY}
+    volumes:
+      - whatsapp-store:/app/store
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8081), timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      whatsapp-bridge:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1'
+    expose:
+      - "8081"
+
+  web-ui:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.web-ui
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      whatsapp-bridge:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.5'
+    expose:
+      - "8080"
+
+volumes:
+  whatsapp-store:
