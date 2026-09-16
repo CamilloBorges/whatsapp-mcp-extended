@@ -8,6 +8,7 @@ from typing import Any, Literal
 import requests as _requests
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
@@ -67,7 +68,28 @@ from whatsapp import update_group as whatsapp_update_group
 _INLINE_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 # Initialize FastMCP server
-mcp = FastMCP("whatsapp-extended")
+#
+# Fork-local fix: FastMCP only auto-builds DNS-rebinding-protection settings (allowing Host:
+# localhost/127.0.0.1/::1) when constructed with host in that same loopback set. Deployments
+# behind a reverse proxy/tunnel run with HOST=0.0.0.0, so that branch never fires, and
+# upstream otherwise has no way to allowlist a real public hostname — every request gets
+# "421 Invalid Host header" (empty allowed_hosts + protection left on, or a check against
+# loopback-only patterns, depending on how it was constructed). Set MCP_TRUSTED_HOSTS
+# (comma-separated, e.g. "mcp-whatsapp.example.com") to the Host header your reverse proxy
+# actually sends. Unset behaves exactly as upstream (loopback-only, or open if you also pass
+# HOST=127.0.0.1).
+_trusted_hosts = [h.strip() for h in os.getenv("MCP_TRUSTED_HOSTS", "").split(",") if h.strip()]
+_transport_security = (
+    TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_trusted_hosts,
+        allowed_origins=[f"https://{h}" for h in _trusted_hosts] + [f"http://{h}" for h in _trusted_hosts],
+    )
+    if _trusted_hosts
+    else None
+)
+
+mcp = FastMCP("whatsapp-extended", transport_security=_transport_security)
 
 ALL_TOOLSETS = {
     "core",

@@ -71,6 +71,11 @@ services:
       - WHATSAPP_MCP_TOOLS=get_setup_qr,setup_status,download_media
       - BRIDGE_HOST=whatsapp-bridge
       - API_KEY=${API_KEY}
+      # Fork-local fix (see whatsapp-mcp-server/main.py) — without this, every request gets
+      # "421 Invalid Host header" once deployed behind a domain, since upstream only ever
+      # allowlists loopback Host headers. Must match the Host header the tunnel/proxy sends
+      # (i.e. your public domain, no scheme, no port).
+      - MCP_TRUSTED_HOSTS=${MCP_TRUSTED_HOSTS:?set to your public domain, e.g. mcp-whatsapp-ext.bomgado.net}
     volumes:
       - whatsapp-store:/app/store
     healthcheck:
