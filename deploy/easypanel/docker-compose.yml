@@ -76,6 +76,11 @@ services:
       # allowlists loopback Host headers. Must match the Host header the tunnel/proxy sends
       # (i.e. your public domain, no scheme, no port).
       - MCP_TRUSTED_HOSTS=${MCP_TRUSTED_HOSTS:?set to your public domain, e.g. mcp-whatsapp-ext.bomgado.net}
+      # Local voice-message transcription (fork-local, see transcribe.py). "base" is what's
+      # baked into the image at build time (Dockerfile.mcp ARG WHISPER_MODEL_SIZE) — change
+      # here only picks a different *already-cached* size; switching sizes for real means
+      # rebuilding the image with that ARG, or accept a slower first-request lazy download.
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-base}
     volumes:
       - whatsapp-store:/app/store
     healthcheck:
@@ -90,7 +95,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          # Bumped from 512M: the faster-whisper "base" model (~150MB on disk) plus its
+          # runtime overhead doesn't reliably fit alongside the rest of the app in 512M.
+          memory: 768M
           cpus: '1'
     expose:
       - "8081"

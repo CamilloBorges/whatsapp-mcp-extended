@@ -65,6 +65,9 @@ from whatsapp import unlink_account as whatsapp_unlink_account
 from whatsapp import update_blocklist as whatsapp_update_blocklist
 from whatsapp import update_group as whatsapp_update_group
 
+from transcribe import AUDIO_EXTS as _AUDIO_EXTS
+from transcribe import transcribe_audio as _transcribe_audio
+
 _INLINE_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 # Initialize FastMCP server
@@ -366,12 +369,19 @@ def download_media(message_id: str, chat_jid: str) -> Any:
     inline as an MCP image content block, so MCP clients without filesystem
     access can still view and analyze it without a separate Read step.
 
+    For audio media (ogg/opus/m4a/mp3/wav/aac/amr) the response includes a
+    local speech-to-text transcript (see `transcript` / `transcript_error`
+    below) — WhatsApp's own in-app transcription is device-local and never
+    reaches this API, so this is the only way an MCP client gets the text.
+
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
 
     Returns:
         For images: a list with [inline image, status dict].
+        For audio: a status dict with success, message, file_path, and either
+            transcript (+ transcript_language) or transcript_error.
         For other media: a status dict with success, message, file_path.
 
     Hints:
@@ -390,8 +400,19 @@ def download_media(message_id: str, chat_jid: str) -> Any:
         "file_path": file_path,
     }
 
-    if Path(file_path).suffix.lower() in _INLINE_IMAGE_EXTS:
+    suffix = Path(file_path).suffix.lower()
+
+    if suffix in _INLINE_IMAGE_EXTS:
         return [Image(path=file_path), status]
+
+    if suffix in _AUDIO_EXTS:
+        result = _transcribe_audio(file_path)
+        if "text" in result:
+            status["transcript"] = result["text"]
+            status["transcript_language"] = result.get("language")
+        else:
+            status["transcript_error"] = result.get("error", "unknown error")
+
     return status
 
 
