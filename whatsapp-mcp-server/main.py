@@ -11,6 +11,7 @@ from mcp.server.fastmcp.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
+from lib.utils import STORE_PATH as _STORE_PATH
 from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
 
 # Phase 2: Group Management
@@ -361,6 +362,18 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
     return whatsapp_audio_voice_message(recipient, media_path)
 
 
+def _local_media_path(bridge_path: str) -> str:
+    """Map a bridge-relative media path ("store/...") to this container's store mount."""
+    if os.path.isabs(bridge_path) or os.path.exists(bridge_path):
+        return bridge_path
+    rel = Path(bridge_path)
+    if rel.parts and rel.parts[0] == "store":
+        candidate = Path(_STORE_PATH, *rel.parts[1:])
+        if candidate.exists():
+            return str(candidate)
+    return bridge_path
+
+
 @tool("media", "Download Media", read_only=True, idempotent=True, open_world=False)
 def download_media(message_id: str, chat_jid: str) -> Any:
     """Download media from a WhatsApp message and get the local file path.
@@ -400,13 +413,16 @@ def download_media(message_id: str, chat_jid: str) -> Any:
         "file_path": file_path,
     }
 
+    # The bridge answers with a path relative to *its own* working dir
+    # ("store/media/..."); here the same volume is mounted at _STORE_PATH.
+    local_path = _local_media_path(file_path)
     suffix = Path(file_path).suffix.lower()
 
     if suffix in _INLINE_IMAGE_EXTS:
-        return [Image(path=file_path), status]
+        return [Image(path=local_path), status]
 
     if suffix in _AUDIO_EXTS:
-        result = _transcribe_audio(file_path)
+        result = _transcribe_audio(local_path)
         if "text" in result:
             status["transcript"] = result["text"]
             status["transcript_language"] = result.get("language")

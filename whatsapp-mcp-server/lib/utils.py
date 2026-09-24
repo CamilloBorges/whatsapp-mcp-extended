@@ -59,6 +59,7 @@ else:
     _legacy_path = os.path.join(_project_root, "store")
     _store_path = _local_dev_path if os.path.exists(_local_dev_path) else _legacy_path
 
+STORE_PATH = _store_path
 MESSAGES_DB_PATH = os.path.join(_store_path, "messages.db")
 WHATSAPP_DB_PATH = os.path.join(_store_path, "whatsapp.db")
 
