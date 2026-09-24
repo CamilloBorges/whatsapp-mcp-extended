@@ -37,25 +37,18 @@ management/presence/blocklist/newsletter tools are registered at all — not jus
 actually absent from the MCP tool list the server advertises.
 
 ## Voice message transcription (fork-local)
-`download_media` now runs a local speech-to-text pass (`faster-whisper`, CPU-only, no GPU) on
-audio media before returning, and includes the result as `transcript` (+
-`transcript_language`) or `transcript_error` in its response. This never leaves the container —
-no third-party transcription API involved. Rationale: WhatsApp's own in-app "transcrever"
-feature runs on-device and is never exposed over the protocol/API, so without this an MCP
-client has zero access to voice message content.
+`download_media` sends audio media to the separate **whisper-mcp** service
+(`CamilloBorges/whisper-mcp`, faster-whisper on our own server) and includes the result as
+`transcript` (+ `transcript_language`) or `transcript_error` in its response — no third-party
+transcription API involved. Rationale: WhatsApp's own in-app "transcrever" feature runs
+on-device and is never exposed over the protocol/API, so without this an MCP client has zero
+access to voice message content.
 
-- Model size is picked at **build time** via the `WHISPER_MODEL_SIZE` build arg in
-  `Dockerfile.mcp` (default `base`, baked into the image so there's no first-request download
-  delay and the container can run fully offline). `small` gives noticeably better Portuguese
-  accuracy at the cost of a larger image and more RAM — if you switch, bump `whatsapp-mcp`'s
-  memory limit (see below) further, and rebuild rather than just changing the runtime
-  `WHISPER_MODEL_SIZE` env var (that env var only selects among sizes *already baked/cached*,
-  it doesn't fetch a new one unless the container happens to have outbound network access at
-  runtime too).
-- Memory limit for `whatsapp-mcp` was bumped from 512M to 768M in this compose file to fit the
-  `base` model's runtime footprint. **EasyPanel's UI sometimes has its own resource-limit
-  field separate from what's in the compose file — check the service's Resources tab after
-  deploying and raise it there too if it's still capped at 512M.**
+Env vars on the `whatsapp-mcp` service:
+- `WHISPER_URL` — e.g. `https://whisper-mcp.bomgado.net/v1/audio/transcriptions` (empty = off).
+- `WHISPER_CF_CLIENT_ID` / `WHISPER_CF_CLIENT_SECRET` — Cloudflare Access service token, needed
+  when `WHISPER_URL` is the public hostname.
+- `WHISPER_LANGUAGE` — default `pt`; empty = auto-detect.
 
 ## Deploy steps
 

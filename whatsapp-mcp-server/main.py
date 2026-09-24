@@ -370,7 +370,7 @@ def download_media(message_id: str, chat_jid: str) -> Any:
     access can still view and analyze it without a separate Read step.
 
     For audio media (ogg/opus/m4a/mp3/wav/aac/amr) the response includes a
-    local speech-to-text transcript (see `transcript` / `transcript_error`
+    speech-to-text transcript from the whisper-mcp service (see `transcript` / `transcript_error`
     below) — WhatsApp's own in-app transcription is device-local and never
     reaches this API, so this is the only way an MCP client gets the text.
 

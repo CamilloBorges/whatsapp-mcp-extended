@@ -14,10 +14,8 @@ RUN grep -vE "^gradio" requirements.txt > requirements-docker.txt \
 # Runtime stage: slim base + ffmpeg + venv only, no build tools
 FROM python:3.13-slim AS runtime
 
-# libgomp1: OpenMP runtime needed by ctranslate2 (faster-whisper's backend)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
@@ -29,18 +27,6 @@ RUN groupadd -g ${GID} appuser && useradd -l -u ${UID} -g appuser appuser
 
 WORKDIR /app
 COPY ./whatsapp-mcp-server /app/whatsapp-mcp-server
-
-# Speech-to-text model cache: fixed absolute path so it's found regardless of
-# which user's $HOME is active (baked in as root below, read by appuser at
-# runtime). Pre-downloading at build time means transcription works offline /
-# with no cold-start delay on the first voice message; if the build
-# environment has no network access this RUN step can be dropped and
-# transcribe.py will just download the model lazily on first use instead.
-ENV HF_HOME=/app/whisper-cache
-ARG WHISPER_MODEL_SIZE=base
-ENV WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
-RUN mkdir -p /app/whisper-cache \
-    && python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL_SIZE}', device='cpu', compute_type='int8')"
 
 RUN mkdir -p /app/store /app/media \
     && printf '#!/bin/bash\ncd /app/whatsapp-mcp-server\nexec python main.py\n' > /app/entrypoint-mcp.sh \

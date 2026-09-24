@@ -1,34 +1,29 @@
-"""Local speech-to-text for WhatsApp voice messages, using faster-whisper (CPU-only).
+"""Speech-to-text for WhatsApp voice messages, delegated to the whisper-mcp service.
 
-Runs in-process in the whatsapp-mcp container, against files already on disk
-in the shared `store` volume (populated by the whatsapp-bridge service) — no
-network hop needed. Model is loaded lazily on first use and kept in memory
-for the life of the process.
+The audio file is already on disk in the shared `store` volume (populated by
+the whatsapp-bridge service); we POST it to whisper-mcp's OpenAI-compatible
+REST route (`/v1/audio/transcriptions`, multipart field `file`) and return the
+text. Transcription itself runs on our own infrastructure (faster-whisper in
+the whisper-mcp container) — no third-party API involved.
+
+Config (env):
+    WHISPER_URL               full URL of the REST route; transcription is
+                              disabled (returns an error) if unset.
+    WHISPER_CF_CLIENT_ID      optional Cloudflare Access service-token headers,
+    WHISPER_CF_CLIENT_SECRET  needed when WHISPER_URL is the public hostname.
+    WHISPER_LANGUAGE          defaults to "pt"; empty = auto-detect.
+    WHISPER_TIMEOUT           seconds, defaults to 300.
 """
 
 import logging
 import os
-import threading
+from pathlib import Path
+
+import httpx
 
 logger = logging.getLogger("whatsapp-mcp")
 
 AUDIO_EXTS = {".ogg", ".opus", ".m4a", ".mp3", ".wav", ".aac", ".amr"}
-
-_model = None
-_model_lock = threading.Lock()
-
-
-def _get_model():
-    global _model
-    if _model is None:
-        with _model_lock:
-            if _model is None:
-                from faster_whisper import WhisperModel
-
-                model_size = os.environ.get("WHISPER_MODEL_SIZE", "base")
-                logger.info(f"Loading faster-whisper model '{model_size}' (CPU, int8)...")
-                _model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    return _model
 
 
 def transcribe_audio(file_path: str) -> dict:
@@ -38,12 +33,34 @@ def transcribe_audio(file_path: str) -> dict:
     failure. Never raises — callers should check for the "error" key instead
     of wrapping this in try/except.
     """
+    url = os.environ.get("WHISPER_URL", "").strip()
+    if not url:
+        return {"error": "transcription disabled: WHISPER_URL is not set"}
+
+    headers = {}
+    client_id = os.environ.get("WHISPER_CF_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("WHISPER_CF_CLIENT_SECRET", "").strip()
+    if client_id and client_secret:
+        headers["CF-Access-Client-Id"] = client_id
+        headers["CF-Access-Client-Secret"] = client_secret
+
+    data = {}
+    language = os.environ.get("WHISPER_LANGUAGE", "pt").strip()
+    if language:
+        data["language"] = language
+
     try:
-        model = _get_model()
-        language = os.environ.get("WHISPER_LANGUAGE", "pt") or None
-        segments, info = model.transcribe(file_path, language=language, vad_filter=True)
-        text = " ".join(segment.text.strip() for segment in segments).strip()
-        return {"text": text, "language": info.language}
+        with open(file_path, "rb") as f:
+            response = httpx.post(
+                url,
+                headers=headers,
+                data=data,
+                files={"file": (Path(file_path).name, f)},
+                timeout=float(os.environ.get("WHISPER_TIMEOUT", "300")),
+            )
+        response.raise_for_status()
+        body = response.json()
+        return {"text": (body.get("text") or "").strip(), "language": body.get("language")}
     except Exception as e:
         logger.exception(f"Failed to transcribe {file_path}")
         return {"error": str(e)}
