@@ -76,6 +76,12 @@ services:
       # allowlists loopback Host headers. Must match the Host header the tunnel/proxy sends
       # (i.e. your public domain, no scheme, no port).
       - MCP_TRUSTED_HOSTS=${MCP_TRUSTED_HOSTS:?set to your public domain, e.g. mcp-whatsapp-ext.bomgado.net}
+      # Voice-message transcription (fork-local, see transcribe.py): download_media POSTs
+      # audio to the whisper-mcp service. Leave WHISPER_URL empty to disable.
+      - WHISPER_URL=${WHISPER_URL:-}
+      - WHISPER_CF_CLIENT_ID=${WHISPER_CF_CLIENT_ID:-}
+      - WHISPER_CF_CLIENT_SECRET=${WHISPER_CF_CLIENT_SECRET:-}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-pt}
     volumes:
       - whatsapp-store:/app/store
     healthcheck:

@@ -36,6 +36,20 @@ service "web-ui" also runs (QR pairing fallback) but gets NO public domain — s
 management/presence/blocklist/newsletter tools are registered at all — not just hidden,
 actually absent from the MCP tool list the server advertises.
 
+## Voice message transcription (fork-local)
+`download_media` sends audio media to the separate **whisper-mcp** service
+(`CamilloBorges/whisper-mcp`, faster-whisper on our own server) and includes the result as
+`transcript` (+ `transcript_language`) or `transcript_error` in its response — no third-party
+transcription API involved. Rationale: WhatsApp's own in-app "transcrever" feature runs
+on-device and is never exposed over the protocol/API, so without this an MCP client has zero
+access to voice message content.
+
+Env vars on the `whatsapp-mcp` service:
+- `WHISPER_URL` — e.g. `https://whisper-mcp.bomgado.net/v1/audio/transcriptions` (empty = off).
+- `WHISPER_CF_CLIENT_ID` / `WHISPER_CF_CLIENT_SECRET` — Cloudflare Access service token, needed
+  when `WHISPER_URL` is the public hostname.
+- `WHISPER_LANGUAGE` — default `pt`; empty = auto-detect.
+
 ## Deploy steps
 
 ### 1. EasyPanel
