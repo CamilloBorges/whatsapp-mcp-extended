@@ -1,0 +1,12 @@
+# Worker do espelho do WhatsApp (ver espelho/principal.py).
+FROM python:3.13-slim
+ARG UID=1000
+ARG GID=1000
+RUN groupadd -g ${GID} espelho && useradd -u ${UID} -g ${GID} -M espelho
+WORKDIR /app
+COPY espelho/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY espelho/*.py ./
+COPY espelho/migracoes ./migracoes
+USER espelho
+CMD ["python", "principal.py"]

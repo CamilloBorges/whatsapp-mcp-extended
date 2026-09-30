@@ -123,5 +123,56 @@ services:
     expose:
       - "8080"
 
+  # Espelho do WhatsApp (fork-local; desenho na nota "Espelho do WhatsApp" do cofre):
+  # Postgres próprio com chats e mensagens copiados do banco interno da ponte (messages.db),
+  # independente dele e da plataforma de dados da empresa. Sem porta publicada.
+  espelho-db:
+    image: postgres:17.11
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - POSTGRES_DB=espelho
+      - POSTGRES_USER=espelho
+      - POSTGRES_PASSWORD=${ESPELHO_DB_PASSWORD:?set ESPELHO_DB_PASSWORD - see .env.example}
+    volumes:
+      - espelho-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U espelho -d espelho -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+
+  # Lê o messages.db da ponte (modo só leitura no SQLite; o volume precisa estar montado com
+  # escrita só porque o SQLite em WAL grava o arquivo -shm até na leitura) e copia para o espelho.
+  espelho-worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.espelho
+      args:
+        UID: "1000"
+        GID: "1000"
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - ESPELHO_DB_URL=postgresql://espelho:${ESPELHO_DB_PASSWORD}@espelho-db:5432/espelho
+      - PONTE_DB=/ponte/messages.db
+      - INTERVALO_S=60
+    volumes:
+      - whatsapp-store:/ponte
+    depends_on:
+      espelho-db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
 volumes:
   whatsapp-store:
+  espelho-db:

@@ -172,8 +172,10 @@ func (c *Client) HandleMessage(messageStore *database.MessageStore, webhookManag
 		c.logger.Warnf("Failed to store message: %v", err)
 	}
 
-	// Auto-download media while CDN URL is still fresh
-	if mediaType != "" && (url != "" || directPath != "") {
+	// Auto-download media while CDN URL is still fresh.
+	// Fork: skip contacts' Status updates (status@broadcast) — they were ~60% of the store
+	// volume (7 GB in 14 days) and are never used.
+	if mediaType != "" && (url != "" || directPath != "") && chatJID != "status@broadcast" {
 		go c.autoDownloadMedia(msg.Info.ID, chatJID, mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength)
 	}
 
