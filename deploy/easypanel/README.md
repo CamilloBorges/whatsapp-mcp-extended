@@ -1,3 +1,5 @@
+> **30/09/2026:** o compose do EasyPanel foi para a raiz do repositório (`docker-compose.easypanel.yml`). O EasyPanel grava o `.env` na raiz e o Compose só lê o `.env` da pasta do próprio arquivo; aqui em `deploy/easypanel/` ele não via as variáveis. No EasyPanel, o caminho do arquivo compose do serviço `whatsapp` (projeto `mcp-servers`) é `docker-compose.easypanel.yml`. O `.env.example` desta pasta continua valendo.
+
 # Deploy: WhatsApp MCP (extended) on EasyPanel
 
 Repo: https://github.com/CamilloBorges/whatsapp-mcp-extended

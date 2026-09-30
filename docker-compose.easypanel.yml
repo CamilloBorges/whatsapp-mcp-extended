@@ -1,7 +1,8 @@
 # Deploy bundle for EasyPanel (Git-based Docker Compose import).
 # Projeto "mcp-servers", serviço "whatsapp" (desde 30/09/2026; antes: projeto "whatsapp-mcp", serviço "server").
 #
-# Build context is the repo root (two levels up) — reuses Dockerfile.bridge / Dockerfile.mcp /
+# Na RAIZ do repositório: o EasyPanel grava o .env na raiz e o Compose só lê o .env da pasta do
+# próprio arquivo (em deploy/easypanel/ ele não via as variáveis). Build context = raiz — reuses Dockerfile.bridge / Dockerfile.mcp /
 # Dockerfile.web-ui and the whatsapp-bridge/whatsapp-mcp-server/whatsapp-web-ui source dirs
 # unmodified from upstream (domdomegg/whatsapp-mcp-extended).
 #
@@ -26,7 +27,7 @@
 
 services:
   segredos:
-    build: ../../infra/segredos
+    build: ./infra/segredos
     restart: unless-stopped
     environment:
       KEYVAULT_URL: ${KEYVAULT_URL:?defina KEYVAULT_URL}
@@ -52,7 +53,7 @@ services:
 
   whatsapp-bridge:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.bridge
       args:
         UID: "1000"
@@ -69,7 +70,7 @@ services:
       - API_BIND_HOST=0.0.0.0
     volumes:
       - whatsapp-store:/app/whatsapp-bridge/store
-      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
       - segredos-ponte:/run/segredos:ro
     healthcheck:
       test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/api/health"]
@@ -90,7 +91,7 @@ services:
 
   whatsapp-mcp:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.mcp
       args:
         UID: "1000"
@@ -123,7 +124,7 @@ services:
       - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-pt}
     volumes:
       - whatsapp-store:/app/store
-      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
       - segredos-mcp:/run/segredos:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8081), timeout=3)"]
@@ -144,7 +145,7 @@ services:
 
   web-ui:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.web-ui
     restart: unless-stopped
     healthcheck:
@@ -178,7 +179,7 @@ services:
       - POSTGRES_USER=espelho
     volumes:
       - espelho-db:/var/lib/postgresql/data
-      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
       - segredos-espelho:/run/segredos:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U espelho -d espelho -h 127.0.0.1"]
@@ -198,7 +199,7 @@ services:
   # escrita só porque o SQLite em WAL grava o arquivo -shm até na leitura) e copia para o espelho.
   espelho-worker:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile.espelho
       args:
         UID: "1000"
@@ -212,7 +213,7 @@ services:
       - INTERVALO_S=60
     volumes:
       - whatsapp-store:/ponte
-      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
       - segredos-espelho:/run/segredos:ro
     depends_on:
       espelho-db:
