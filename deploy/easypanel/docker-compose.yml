@@ -1,4 +1,5 @@
 # Deploy bundle for EasyPanel (Git-based Docker Compose import).
+# Projeto "mcp-servers", serviço "whatsapp" (desde 30/09/2026; antes: projeto "whatsapp-mcp", serviço "server").
 #
 # Build context is the repo root (two levels up) — reuses Dockerfile.bridge / Dockerfile.mcp /
 # Dockerfile.web-ui and the whatsapp-bridge/whatsapp-mcp-server/whatsapp-web-ui source dirs
@@ -15,8 +16,40 @@
 # - whatsapp-mcp is the ONLY service that should get an EasyPanel domain (that's the actual
 #   MCP endpoint). Same as the previous deploy: that domain must NOT be reachable without a
 #   Cloudflare Access policy in front of it — this app has no auth of its own on that port.
+#
+# Segredos (fork-local): vêm do Azure Key Vault kv-bomgado-mcp (separado do cofre da plataforma
+# de dados). No ambiente do EasyPanel ficam só as 4 variáveis de acesso ao cofre (.env.example).
+# O serviço "segredos" é o único que fala com o cofre; ele entrega a cada consumidor, num volume
+# em memória exclusivo, só as senhas que ele usa, e o com_segredos.sh do consumidor as carrega.
+# Nome no cofre = variável em minúsculas com hífen (WHATSAPP_API_KEY -> whatsapp-api-key).
+# Ver infra/segredos/segredos.py e a nota "Espelho do WhatsApp" do cofre do Obsidian.
 
 services:
+  segredos:
+    build: ../../infra/segredos
+    restart: unless-stopped
+    environment:
+      KEYVAULT_URL: ${KEYVAULT_URL:?defina KEYVAULT_URL}
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:?defina AZURE_TENANT_ID}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:?defina AZURE_CLIENT_ID}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:?defina AZURE_CLIENT_SECRET}
+      SEGREDOS_PONTE: WHATSAPP_API_KEY
+      SEGREDOS_MCP: WHATSAPP_API_KEY WHISPER_CF_CLIENT_ID? WHISPER_CF_CLIENT_SECRET?
+      SEGREDOS_ESPELHO: ESPELHO_DB_PASSWORD
+    volumes:
+      - segredos-ponte:/run/segredos/ponte
+      - segredos-mcp:/run/segredos/mcp
+      - segredos-espelho:/run/segredos/espelho
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/pronto"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
   whatsapp-bridge:
     build:
       context: ../..
@@ -28,19 +61,25 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
+    entrypoint: ["sh", "/usr/local/bin/com_segredos.sh", "sh", "-c",
+                 "export API_KEY=\"$$WHATSAPP_API_KEY\"; exec /app/entrypoint-bridge.sh"]
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
-      - API_KEY=${API_KEY:?set a fresh key in .env — see .env.example}
       - DISABLE_AUTH_CHECK=false
       - API_BIND_HOST=0.0.0.0
     volumes:
       - whatsapp-store:/app/whatsapp-bridge/store
+      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - segredos-ponte:/run/segredos:ro
     healthcheck:
       test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/api/health"]
       interval: 60s
       timeout: 10s
       retries: 3
       start_period: 30s
+    depends_on:
+      segredos:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -57,6 +96,8 @@ services:
         UID: "1000"
         GID: "1000"
     restart: unless-stopped
+    entrypoint: ["sh", "/usr/local/bin/com_segredos.sh", "sh", "-c",
+                 "export API_KEY=\"$$WHATSAPP_API_KEY\"; exec /app/entrypoint-mcp.sh"]
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
       - MCP_TRANSPORT=streamable-http
@@ -70,20 +111,20 @@ services:
       - WHATSAPP_MCP_TOOLSETS=core
       - WHATSAPP_MCP_TOOLS=get_setup_qr,setup_status,download_media
       - BRIDGE_HOST=whatsapp-bridge
-      - API_KEY=${API_KEY}
       # Fork-local fix (see whatsapp-mcp-server/main.py) — without this, every request gets
       # "421 Invalid Host header" once deployed behind a domain, since upstream only ever
       # allowlists loopback Host headers. Must match the Host header the tunnel/proxy sends
       # (i.e. your public domain, no scheme, no port).
-      - MCP_TRUSTED_HOSTS=${MCP_TRUSTED_HOSTS:?set to your public domain, e.g. mcp-whatsapp-ext.bomgado.net}
+      - MCP_TRUSTED_HOSTS=${MCP_TRUSTED_HOSTS:?set to your public domain, e.g. whatsapp-mcp.bomgado.net}
       # Voice-message transcription (fork-local, see transcribe.py): download_media POSTs
-      # audio to the whisper-mcp service. Leave WHISPER_URL empty to disable.
+      # audio to the whisper-mcp service. Leave WHISPER_URL empty to disable. The Cloudflare
+      # Access service token for it (WHISPER_CF_CLIENT_ID/SECRET) comes from the Key Vault.
       - WHISPER_URL=${WHISPER_URL:-}
-      - WHISPER_CF_CLIENT_ID=${WHISPER_CF_CLIENT_ID:-}
-      - WHISPER_CF_CLIENT_SECRET=${WHISPER_CF_CLIENT_SECRET:-}
       - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-pt}
     volumes:
       - whatsapp-store:/app/store
+      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - segredos-mcp:/run/segredos:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8081), timeout=3)"]
       interval: 30s
@@ -129,18 +170,24 @@ services:
   espelho-db:
     image: postgres:17.11
     restart: unless-stopped
+    entrypoint: ["sh", "/usr/local/bin/com_segredos.sh", "sh", "-c",
+                 "export POSTGRES_PASSWORD=\"$$ESPELHO_DB_PASSWORD\"; exec docker-entrypoint.sh postgres"]
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
       - POSTGRES_DB=espelho
       - POSTGRES_USER=espelho
-      - POSTGRES_PASSWORD=${ESPELHO_DB_PASSWORD:?set ESPELHO_DB_PASSWORD - see .env.example}
     volumes:
       - espelho-db:/var/lib/postgresql/data
+      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - segredos-espelho:/run/segredos:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U espelho -d espelho -h 127.0.0.1"]
       interval: 10s
       timeout: 5s
       retries: 10
+    depends_on:
+      segredos:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -157,13 +204,16 @@ services:
         UID: "1000"
         GID: "1000"
     restart: unless-stopped
+    entrypoint: ["sh", "/usr/local/bin/com_segredos.sh", "sh", "-c",
+                 "export ESPELHO_DB_URL=\"postgresql://espelho:$$ESPELHO_DB_PASSWORD@espelho-db:5432/espelho\"; exec python principal.py"]
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
-      - ESPELHO_DB_URL=postgresql://espelho:${ESPELHO_DB_PASSWORD}@espelho-db:5432/espelho
       - PONTE_DB=/ponte/messages.db
       - INTERVALO_S=60
     volumes:
       - whatsapp-store:/ponte
+      - ../../infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - segredos-espelho:/run/segredos:ro
     depends_on:
       espelho-db:
         condition: service_healthy
@@ -173,6 +223,17 @@ services:
           memory: 256M
           cpus: '0.5'
 
+# Segredos: tmpfs (só em memória, nunca no disco). Um volume por consumidor.
+x-tmpfs: &tmpfs
+  driver: local
+  driver_opts:
+    type: tmpfs
+    device: tmpfs
+    o: size=64k,mode=0755
+
 volumes:
   whatsapp-store:
   espelho-db:
+  segredos-ponte: *tmpfs
+  segredos-mcp: *tmpfs
+  segredos-espelho: *tmpfs
