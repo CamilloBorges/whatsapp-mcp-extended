@@ -39,6 +39,9 @@ ALL_TOOLS = DEFAULT_TOOLS | {
     "resumo_do_periodo",
     "buscar_no_espelho",
     "consultar_espelho",
+    "adicionar_numero",
+    "status_do_numero",
+    "remover_numero",
 }
 
 

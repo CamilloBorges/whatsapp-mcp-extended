@@ -1,11 +1,12 @@
 """Consultas ao espelho do WhatsApp (Postgres), sem passar pela ponte (fork-local, fase 3).
 
 O espelho tem um schema por conta (número) do WhatsApp: `conta_<nome>`, com chats, mensagens,
-transcrições dos áudios e mídias (ver espelho/principal.py). Tudo aqui é só leitura: cada consulta
-roda numa transação READ ONLY, com tempo máximo, no fuso de Porto Alegre.
+transcrições dos áudios e mídias (ver espelho/principal.py). A tabela public.contas diz o dono de
+cada conta: **só o dono usa a conta** (quem chama vem de identidade.py). Tudo aqui é só leitura:
+cada consulta roda numa transação READ ONLY, com tempo máximo, no fuso de Porto Alegre e com o papel
+leitor_<conta>, que não enxerga o schema de outra conta nem a tabela de contas.
 
-Variáveis: ESPELHO_DB_URL (sem ela, as ferramentas avisam que o espelho não está configurado),
-ESPELHO_CONTA_PADRAO (padrão "camillo").
+Variável: ESPELHO_DB_URL (sem ela, as ferramentas avisam que o espelho não está configurado).
 """
 
 import os
@@ -14,7 +15,6 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 FUSO = "America/Sao_Paulo"
-CONTA_PADRAO = os.getenv("ESPELHO_CONTA_PADRAO", "camillo")
 CLASSIFICACOES = ("trabalho", "pessoal", "ruido", "a_classificar")
 CLASSIFICACOES_PADRAO = ("trabalho", "pessoal", "a_classificar")
 MAX_CARACTERES = 60_000
@@ -36,51 +36,68 @@ class ErroEspelho(Exception):
     pass
 
 
-def _esquema(conta: str | None) -> str:
-    conta = (conta or CONTA_PADRAO).strip().lower()
+def nome_de_conta(conta: str) -> str:
+    conta = (conta or "").strip().lower()
     if not _NOME_CONTA.match(conta):
-        raise ErroEspelho(f"conta inválida: {conta!r}")
-    return f"conta_{conta}"
+        raise ErroEspelho(f"conta inválida: {conta!r} (letras minúsculas, números e _, começando por letra)")
+    return conta
 
 
-def _ler(
-    conta: str | None, sql: str, parametros: Any = None, limite: int | None = None
-) -> tuple[list[str], list[tuple], bool]:
-    """Roda uma consulta só de leitura no schema da conta. Devolve (colunas, linhas, truncado)."""
+def conectar(**opcoes: Any):
     url = os.getenv("ESPELHO_DB_URL")
     if not url:
         raise ErroEspelho("o espelho não está configurado neste servidor (ESPELHO_DB_URL)")
     import psycopg
 
-    esquema = _esquema(conta)
-    with psycopg.connect(url) as con:
+    return psycopg.connect(url, **opcoes)
+
+
+def contas_de(pessoa: str | None) -> list[dict[str, Any]]:
+    """As contas da pessoa (public.contas), a primeira vaga primeiro."""
+    if not pessoa:
+        raise ErroEspelho("não foi possível identificar quem chama (entre pelo Hub da Bomgado)")
+    with conectar() as con:
+        cur = con.execute(
+            "SELECT conta, vaga, telefone, situacao FROM public.contas WHERE dono = %s ORDER BY vaga NULLS LAST, conta",
+            (pessoa,),
+        )
+        return [dict(zip(("conta", "vaga", "telefone", "situacao"), linha, strict=True)) for linha in cur.fetchall()]
+
+
+def conta_de(pessoa: str | None, conta: str | None = None) -> str:
+    """A conta pedida, se for da pessoa; sem conta, a primeira dela."""
+    minhas = [c["conta"] for c in contas_de(pessoa)]
+    if not minhas:
+        raise ErroEspelho("você ainda não tem número de WhatsApp no espelho: use adicionar_numero")
+    if conta is None:
+        return minhas[0]
+    conta = nome_de_conta(conta)
+    if conta not in minhas:
+        raise ErroEspelho(f"a conta {conta!r} não é sua (as suas: {', '.join(minhas)})")
+    return conta
+
+
+def _ler(
+    conta: str, sql: str, parametros: Any = None, limite: int | None = None
+) -> tuple[list[str], list[tuple], bool]:
+    """Roda uma consulta só de leitura no schema da conta, com o papel leitor_<conta>.
+    Devolve (colunas, linhas, truncado)."""
+    conta = nome_de_conta(conta)
+    with conectar() as con:
         with con.transaction():
             con.execute("SET TRANSACTION READ ONLY")
-            existe = con.execute("SELECT 1 FROM pg_namespace WHERE nspname = %s", (esquema,)).fetchone()
-            if not existe:
-                raise ErroEspelho(f"a conta {esquema.removeprefix('conta_')!r} não existe no espelho")
+            if not con.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (f"leitor_{conta}",)).fetchone():
+                raise ErroEspelho(f"a conta {conta!r} ainda não está pronta no espelho (o worker cria em até 1 minuto)")
             con.execute(f"SET LOCAL statement_timeout = '{TEMPO_MAXIMO}'")
             con.execute(f"SET LOCAL TimeZone = '{FUSO}'")
-            con.execute(f'SET LOCAL search_path = "{esquema}"')
+            con.execute(f'SET LOCAL search_path = "conta_{conta}"')
+            con.execute(f'SET LOCAL ROLE "leitor_{conta}"')
             cur = con.execute(sql, parametros)
             colunas = [c.name for c in cur.description or []]
             if limite is None:
                 return colunas, cur.fetchall(), False
             linhas = cur.fetchmany(limite + 1)
             return colunas, linhas[:limite], len(linhas) > limite
-
-
-def contas() -> list[str]:
-    url = os.getenv("ESPELHO_DB_URL")
-    if not url:
-        raise ErroEspelho("o espelho não está configurado neste servidor (ESPELHO_DB_URL)")
-    import psycopg
-
-    with psycopg.connect(url) as con:
-        linhas = con.execute(
-            "SELECT substr(nspname, 7) FROM pg_namespace WHERE nspname LIKE 'conta\\_%' ORDER BY 1"
-        ).fetchall()
-    return [n for (n,) in linhas]
 
 
 def _data(texto: str) -> tuple[datetime, bool]:
@@ -135,6 +152,7 @@ def _quem(de_mim: bool, remetente: str | None, chat: str, tipo: str) -> str:
 
 
 def resumo_do_periodo(
+    pessoa: str | None,
     inicio: str,
     fim: str | None = None,
     conta: str | None = None,
@@ -142,6 +160,7 @@ def resumo_do_periodo(
     chat: str | None = None,
     max_caracteres: int = MAX_CARACTERES,
 ) -> dict[str, Any]:
+    conta = conta_de(pessoa, conta)
     a, b = _periodo(inicio, fim)
     escolhidas = list(classificacoes or CLASSIFICACOES_PADRAO)
     invalidas = set(escolhidas) - set(CLASSIFICACOES)
@@ -201,7 +220,7 @@ def resumo_do_periodo(
         resultado.append(item)
     sem_audio = sum(1 for linha in linhas if linha[8] == "audio" and not linha[10])
     return {
-        "conta": (conta or CONTA_PADRAO),
+        "conta": conta,
         "periodo": {"inicio": a.isoformat(timespec="minutes"), "fim_exclusivo": b.isoformat(timespec="minutes")},
         "classificacoes": escolhidas,
         "total_mensagens": sum(c["mensagens"] for c in chats.values()),
@@ -214,6 +233,7 @@ def resumo_do_periodo(
 
 
 def buscar(
+    pessoa: str | None,
     texto: str,
     conta: str | None = None,
     desde: str | None = None,
@@ -222,6 +242,7 @@ def buscar(
     limite: int = 20,
     contexto: int = 2,
 ) -> dict[str, Any]:
+    conta = conta_de(pessoa, conta)
     if not texto or not texto.strip():
         raise ErroEspelho("informe o que buscar")
     limite, contexto = max(1, min(limite, 50)), max(0, min(contexto, 10))
@@ -283,10 +304,11 @@ def buscar(
                 "conversa": conversa,
             }
         )
-    return {"conta": (conta or CONTA_PADRAO), "busca": texto, "resultados": resultados, "ha_mais": mais}
+    return {"conta": conta, "busca": texto, "resultados": resultados, "ha_mais": mais}
 
 
-def consultar(sql: str, conta: str | None = None, limite: int = 200) -> dict[str, Any]:
+def consultar(pessoa: str | None, sql: str, conta: str | None = None, limite: int = 200) -> dict[str, Any]:
+    conta = conta_de(pessoa, conta)
     texto = (sql or "").strip().rstrip(";").strip()
     if not _SO_LEITURA.match(texto):
         raise ErroEspelho("só consultas SELECT ou WITH")
@@ -296,7 +318,7 @@ def consultar(sql: str, conta: str | None = None, limite: int = 200) -> dict[str
         raise ErroEspelho("essa função não é permitida aqui")
     colunas, linhas, truncado = _ler(conta, texto, limite=max(1, min(limite, MAX_LINHAS_SQL)))
     return {
-        "conta": (conta or CONTA_PADRAO),
+        "conta": conta,
         "colunas": colunas,
         "linhas": [
             [v if isinstance(v, (int, float, bool)) or v is None else str(v) for v in linha] for linha in linhas

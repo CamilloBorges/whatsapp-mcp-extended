@@ -426,6 +426,12 @@ func main() {
 
 	// Connect to WhatsApp in background (non-blocking so server can start)
 	go func() {
+		// Fork-local (vagas de número): uma ponte-reserva sem número não entra no ciclo de QR, que
+		// reinicia o contêiner a cada 3 min. Fica só com a API no ar até o POST /api/pair.
+		if client.Store.ID == nil && os.Getenv("ESPERAR_PAREAMENTO") == "true" {
+			logger.Infof("Sem número pareado: aguardando o código de pareamento (POST /api/pair), sem QR")
+			return
+		}
 		if err := client.Connect(); err != nil {
 			logger.Errorf("Failed to connect to WhatsApp: %v", err)
 		} else {

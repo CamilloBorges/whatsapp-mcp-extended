@@ -93,6 +93,49 @@ services:
     expose:
       - "8080"
 
+  # Vaga 2 (fork-local): ponte-reserva, sem número até alguém pedir o código de pareamento pelo
+  # MCP (adicionar_numero). ESPERAR_PAREAMENTO evita o ciclo de QR, que reiniciaria o contêiner a
+  # cada 3 min. Volume próprio: a vaga fica presa à primeira conta que a ocupa.
+  whatsapp-bridge-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+      args:
+        UID: "1000"
+        GID: "1000"
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    entrypoint: ["sh", "/usr/local/bin/com_segredos.sh", "sh", "-c",
+                 "export API_KEY=\"$$WHATSAPP_API_KEY\"; exec /app/entrypoint-bridge.sh"]
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - DISABLE_AUTH_CHECK=false
+      - API_BIND_HOST=0.0.0.0
+      - ESPERAR_PAREAMENTO=true
+    volumes:
+      - whatsapp-store-2:/app/whatsapp-bridge/store
+      - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - segredos-ponte:/run/segredos:ro
+    healthcheck:
+      # Sem número, o /api/health responde 503: aqui basta a API estar no ar.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      segredos:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    expose:
+      - "8080"
+
   whatsapp-mcp:
     build:
       context: .
@@ -113,12 +156,21 @@ services:
       # setup_status (pairing/status, read_only) and download_media (read_only; send_file/
       # send_audio_message live in the same "media" toolset but are NOT enabled here).
       # No send/edit/delete/group-management/presence/blocklist/newsletter capability.
-      # "espelho" (fork-local, fase 3): resumo_do_periodo, buscar_no_espelho e consultar_espelho,
-      # lendo o Postgres do espelho em transações só de leitura.
+      # "espelho" (fork-local): resumo_do_periodo, buscar_no_espelho e consultar_espelho (Postgres
+      # do espelho, só leitura) e adicionar_numero, status_do_numero e remover_numero (vagas).
+      # Cada conta só é usada pelo dono: quem chama vem do JWT do Access (ver identidade.py).
       - WHATSAPP_MCP_TOOLSETS=core,espelho
       - WHATSAPP_MCP_TOOLS=get_setup_qr,setup_status,download_media
-      - ESPELHO_CONTA_PADRAO=camillo
       - BRIDGE_HOST=whatsapp-bridge
+      # Vagas: ponte de cada uma (a 1 é a do Camillo; a 2, reserva). Para ter mais vagas, repetir
+      # whatsapp-bridge-2 e espelho-worker-2 com outro número e acrescentar aqui.
+      - 'ESPELHO_VAGAS={"1": "http://whatsapp-bridge:8080", "2": "http://whatsapp-bridge-2:8080"}'
+      # Identidade: aplicação do Access do Hub (cerebro-mcp, com o e-mail da pessoa) e a deste
+      # MCP (whatsapp-mcp, acesso direto pelo token de serviço do Camillo).
+      - ACESSO_AUD_HUB=${CEREBRO_ACCESS_AUD:-3e41d1a988a0fdc66f1eed34e39732411495c396c6c3a6459e36ee1dedbffe6b}
+      - ACESSO_AUD_DIRETO=${WHATSAPP_ACCESS_AUD:-ff9402ed7306fe1628c0e39e226eede173d9318005d7991f4eb81261a8c26459}
+      - 'ACESSO_PESSOAS={"camillo.cborges@bomgado.com": "Camillo", "ana.borges@bomgado.com": "Ana"}'
+      - ACESSO_DONO_DIRETO=Camillo
       # Fork-local fix (see whatsapp-mcp-server/main.py) — without this, every request gets
       # "421 Invalid Host header" once deployed behind a domain, since upstream only ever
       # allowlists loopback Host headers. Must match the Host header the tunnel/proxy sends
@@ -217,9 +269,11 @@ services:
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
       - PONTE_DB=/ponte/messages.db
-      # Conta (número) desta ponte: schema conta_<CONTA> no espelho. Na primeira subida com contas,
-      # as tabelas antigas do schema public passam para a conta CONTA_HERDA_PUBLIC (padrão camillo).
+      # Vaga 1, que já nasce com a conta do Camillo (schema conta_camillo; só ele a usa). Na
+      # primeira subida com contas, as tabelas antigas do public passaram para ela.
+      - VAGA=1
       - CONTA=camillo
+      - DONO=Camillo
       - INTERVALO_S=60
       # Fila de mídias (fase 2): desligada enquanto R2_BUCKET estiver vazio.
       - PONTE_URL=http://whatsapp-bridge:8080
@@ -229,6 +283,40 @@ services:
       - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-pt}
     volumes:
       - whatsapp-store:/ponte
+      - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
+      - segredos-worker:/run/segredos:ro
+    depends_on:
+      espelho-db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+
+  # Vaga 2: espera o MCP registrar uma conta para ela (adicionar_numero) e então copia como a 1.
+  espelho-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.espelho
+      args:
+        UID: "1000"
+        GID: "1000"
+    restart: unless-stopped
+    entrypoint: ["sh", "/usr/local/bin/com_segredos.sh", "sh", "-c",
+                 "export ESPELHO_DB_URL=\"postgresql://espelho:$$ESPELHO_DB_PASSWORD@espelho-db:5432/espelho\"; exec python principal.py"]
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - PONTE_DB=/ponte/messages.db
+      - VAGA=2
+      - INTERVALO_S=60
+      - PONTE_URL=http://whatsapp-bridge-2:8080
+      - R2_ENDPOINT=${R2_ENDPOINT:-}
+      - R2_BUCKET=${R2_BUCKET:-}
+      - WHISPER_URL=${WHISPER_URL:-}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-pt}
+    volumes:
+      - whatsapp-store-2:/ponte
       - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
       - segredos-worker:/run/segredos:ro
     depends_on:
@@ -250,6 +338,7 @@ x-tmpfs: &tmpfs
 
 volumes:
   whatsapp-store:
+  whatsapp-store-2:
   espelho-db:
   segredos-ponte: *tmpfs
   segredos-mcp: *tmpfs

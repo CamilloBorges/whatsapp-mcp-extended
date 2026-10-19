@@ -14,3 +14,5 @@ gradio_client==1.10.3
 qrcode[pil]>=8.0
 # Fork-local: leitura do espelho do WhatsApp (Postgres), ver espelho.py
 psycopg[binary]==3.3.6
+# Fork-local: identidade de quem chama (JWT do Cloudflare Access), ver identidade.py
+PyJWT[crypto]==2.10.1

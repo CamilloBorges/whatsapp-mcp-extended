@@ -12,6 +12,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 import espelho as _espelho_mod
+import numeros as _numeros_mod
+from identidade import Identidade as _Identidade
 from lib.utils import STORE_PATH as _STORE_PATH
 from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
 from transcribe import AUDIO_EXTS as _AUDIO_EXTS
@@ -900,13 +902,27 @@ def _bridge_get(path: str) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
-# Fork-local (fase 3 do espelho): consultas ao Postgres do espelho, com os áudios já transcritos e
-# sem passar pela ponte. Toolset "espelho"; ver espelho.py.
+# Fork-local (fase 3 do espelho e vagas de número): consultas ao Postgres do espelho, com os áudios
+# já transcritos e sem passar pela ponte, e os números em vagas. Toolset "espelho"; ver espelho.py,
+# numeros.py e identidade.py. Cada conta só é usada pelo dono (quem a adicionou).
+
+_identidade_cache: list[Any] = []
+
+
+def _quem() -> str | None:
+    """A pessoa que chama, pelo JWT do Access (via Hub ou acesso direto); None se não der para saber."""
+    if not _identidade_cache:
+        _identidade_cache.append(_Identidade.do_ambiente())
+    try:
+        cabecalhos = getattr(mcp.get_context().request_context.request, "headers", None)
+    except (LookupError, ValueError, AttributeError):
+        return None
+    return _identidade_cache[0].pessoa(cabecalhos)
 
 
 def _no_espelho(funcao: Any, **argumentos: Any) -> dict[str, Any]:
     try:
-        return funcao(**argumentos)
+        return funcao(_quem(), **argumentos)
     except _espelho_mod.ErroEspelho as e:
         return {"success": False, "error": str(e)}
 
@@ -925,7 +941,7 @@ def resumo_do_periodo(
     Args:
         inicio: Data (AAAA-MM-DD, o dia inteiro) ou data e hora (AAAA-MM-DDTHH:MM), hora de Porto Alegre
         fim: Opcional. Data (inclui o dia) ou data e hora (exclusiva). Sem fim: um dia a partir do início
-        conta: Número do WhatsApp no espelho (padrão: o do Camillo). Ver contas com consultar_espelho
+        conta: Opcional. Qual dos seus números (status_do_numero lista); padrão: o primeiro
         classificacoes: Quais chats entram: trabalho, pessoal, ruido, a_classificar
             (padrão: trabalho, pessoal e a_classificar; o ruído fica de fora)
         chat: Opcional. Nome (parte dele) ou JID de um chat só
@@ -954,7 +970,7 @@ def buscar_no_espelho(
 
     Args:
         texto: O que buscar. Aceita a sintaxe de busca web: "frase exata", -excluir, palavra OR outra
-        conta: Número do WhatsApp no espelho (padrão: o do Camillo)
+        conta: Opcional. Qual dos seus números; padrão: o primeiro
         desde: Opcional. Data (AAAA-MM-DD) ou data e hora inicial
         ate: Opcional. Data final (inclui o dia)
         chat: Opcional. Nome (parte dele) ou JID de um chat só
@@ -969,20 +985,61 @@ def buscar_no_espelho(
 @tool("espelho", "Consultar o espelho (SQL)", read_only=True, idempotent=True, open_world=False)
 def consultar_espelho(sql: str, conta: str | None = None, limite: int = 200) -> dict[str, Any]:
     """SQL só de leitura no espelho, para o que as outras ferramentas não cobrem (contagens, listas de
-    chats, quem mais falou...). Uma consulta SELECT/WITH por vez, no fuso de Porto Alegre.
+    chats, quem mais falou...). Uma consulta SELECT/WITH por vez, no fuso de Porto Alegre, só nas
+    tabelas da sua conta.
 
-    Tabelas (no schema da conta): chats (jid, nome, tipo, classificacao, motivo, ultima_mensagem),
-    mensagens (chat_jid, id, remetente, remetente_nome, enviada_por_mim, momento, texto, tipo_midia,
-    arquivo, resposta_a, busca tsvector), transcricoes (chat_jid, id, texto, busca), midias (chat_jid, id,
-    tipo, chave_r2, tamanho), fila (status da fila de mídias). Contas existentes:
-    SELECT substr(nspname, 7) FROM pg_namespace WHERE nspname LIKE 'conta%'.
+    Tabelas: chats (jid, nome, tipo, classificacao, motivo, ultima_mensagem), mensagens (chat_jid, id,
+    remetente, remetente_nome, enviada_por_mim, momento, texto, tipo_midia, arquivo, resposta_a, busca
+    tsvector), transcricoes (chat_jid, id, texto, busca), midias (chat_jid, id, tipo, chave_r2, tamanho),
+    fila (status da fila de mídias).
 
     Args:
         sql: A consulta
-        conta: Número do WhatsApp no espelho (padrão: o do Camillo)
+        conta: Opcional. Qual dos seus números; padrão: o primeiro
         limite: Máximo de linhas (até 500)
     """
     return _no_espelho(_espelho_mod.consultar, sql=sql, conta=conta, limite=limite)
+
+
+@tool("espelho", "Adicionar número do WhatsApp", read_only=False, idempotent=False, open_world=True)
+def adicionar_numero(telefone: str, conta: str) -> dict[str, Any]:
+    """Conecta um número de WhatsApp ao espelho numa vaga livre e devolve o código de pareamento de
+    8 caracteres (sem QR). A pessoa digita o código no celular desse número, em Aparelhos conectados →
+    Conectar aparelho → Conectar com número de telefone. O número fica só para quem o adicionou.
+
+    Args:
+        telefone: O número completo com DDI e DDD, ex.: +55 51 99999-9999
+        conta: Um nome curto para a conta, em minúsculas (ex.: ana, armazem)
+
+    Returns:
+        codigo (ex.: K7QX-29MD), expira_em_segundos e as instrucoes para passar à pessoa.
+        Mostre o código e as instruções; depois confira com status_do_numero.
+    """
+    return _no_espelho(_numeros_mod.adicionar, telefone=telefone, conta=conta)
+
+
+@tool("espelho", "Status dos meus números do WhatsApp", read_only=True, idempotent=True, open_world=True)
+def status_do_numero(conta: str | None = None) -> dict[str, Any]:
+    """Os seus números de WhatsApp no espelho: se a ponte está pareada e conectada, se há código de
+    pareamento pendente, quantas mensagens já foram copiadas e a última. Também diz quantas vagas
+    estão livres.
+
+    Args:
+        conta: Opcional. Uma conta só; sem ela, todas as suas
+    """
+    return _no_espelho(_numeros_mod.status, conta=conta)
+
+
+@tool("espelho", "Remover número do WhatsApp", read_only=False, destructive=True, open_world=True)
+def remover_numero(conta: str, confirmar: bool = False) -> dict[str, Any]:
+    """Desconecta um dos seus números do servidor (como 'Sair' em Aparelhos conectados). O histórico
+    já copiado continua no espelho, só para você, e a vaga continua sua para reconectar depois.
+
+    Args:
+        conta: Qual dos seus números
+        confirmar: Precisa ser true para desconectar; sem isso, só explica o que vai acontecer
+    """
+    return _no_espelho(_numeros_mod.remover, conta=conta, confirmar=confirmar)
 
 
 @mcp.resource("whatsapp://status")

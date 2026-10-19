@@ -86,6 +86,27 @@ def test_herda_as_tabelas_do_public(ponte):
         con.execute("DROP SCHEMA conta_herdeira, conta_outra CASCADE")
 
 
+def test_vaga_fixa_vaga_reserva_e_papel_de_leitura():
+    from principal import conta_da_vaga, registrar_conta_fixa
+
+    with psycopg.connect(URL, autocommit=True) as con:
+        con.execute("DROP SCHEMA IF EXISTS conta_fixa CASCADE")
+        con.execute("DROP TABLE IF EXISTS public.contas")
+        registrar_conta_fixa(con, "fixa", 1, "Camillo")
+        registrar_conta_fixa(con, "fixa", 1, "Camillo")  # de novo, a cada subida: nada muda
+        assert con.execute("SELECT vaga, dono, situacao FROM public.contas").fetchall() == [(1, "Camillo", "ativa")]
+        assert conta_da_vaga(URL, 1) == "fixa"
+        assert conta_da_vaga(URL, 2) is None  # reserva: espera o MCP registrar uma conta
+        aplicar_migracoes(con, "fixa")
+        con.execute("SET ROLE leitor_fixa")
+        assert con.execute("SELECT count(*) FROM conta_fixa.mensagens").fetchone()[0] == 0
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            con.execute("SELECT * FROM public.contas")
+        con.execute("RESET ROLE")
+        con.execute("DROP SCHEMA conta_fixa CASCADE")
+        con.execute("DROP TABLE public.contas")
+
+
 def test_nome_de_conta_invalido():
     from principal import esquema
 

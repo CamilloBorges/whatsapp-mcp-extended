@@ -590,7 +590,8 @@ func (c *Client) PairWithPhone(phoneNumber string) (string, error) {
 	c.pairingMutex.Lock()
 	defer c.pairingMutex.Unlock()
 
-	if c.pairingInProgress {
+	// Fork-local: um código vencido (160 s) não pode travar novos pedidos para sempre.
+	if c.pairingInProgress && time.Now().Before(c.pairingExpiry) {
 		return "", fmt.Errorf("pairing already in progress")
 	}
 
