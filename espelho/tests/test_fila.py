@@ -23,8 +23,8 @@ COTACAO = "555199584848-1605631030@g.us"
 @pytest.fixture
 def pg():
     with psycopg.connect(URL, autocommit=True) as con:
-        con.execute("DROP TABLE IF EXISTS chats, mensagens, sincronizacao, midias, transcricoes, fila")
-        aplicar_migracoes(con)
+        con.execute("DROP SCHEMA IF EXISTS conta_teste CASCADE")
+        aplicar_migracoes(con, "teste")  # deixa o search_path no schema da conta
         con.execute(
             "INSERT INTO chats (jid, nome, tipo, classificacao) VALUES (%s, 'Operacional Fazenda', 'grupo', 'trabalho'), "
             "(%s, 'COTAÇÃO', 'grupo', 'ruido')", (FAZENDA, COTACAO))
@@ -89,6 +89,14 @@ def test_sem_arquivo_local_pede_a_ponte_e_nao_transcreve_imagem(pg, tmp_path):
     assert s.ponte == ["AUD1", "IMG1"]
     assert pg.execute("SELECT count(*) FROM transcricoes WHERE id = 'IMG1'").fetchone()[0] == 0
     assert processar_uma(pg, tmp_path, s.baixar, s.enviar, s.transcrever) is False  # fila vazia
+
+
+def test_conta_nova_guarda_com_prefixo(pg, tmp_path):
+    s = Simulados(tmp_path)
+    enfileirar(pg)
+    processar_uma(pg, tmp_path, s.baixar, s.enviar, s.transcrever, "armazem/")
+    chave = pg.execute("SELECT chave_r2 FROM midias WHERE id = 'AUD1'").fetchone()[0]
+    assert chave.startswith("armazem/120363145616168799_g.us/") and chave in s.r2
 
 
 def test_falha_volta_para_a_fila_sem_registro_parcial(pg, tmp_path):

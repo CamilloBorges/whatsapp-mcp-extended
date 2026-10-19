@@ -11,8 +11,11 @@ from mcp.server.fastmcp.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
+import espelho as _espelho_mod
 from lib.utils import STORE_PATH as _STORE_PATH
 from lib.utils import WHATSAPP_API_BASE_URL as _BRIDGE_URL
+from transcribe import AUDIO_EXTS as _AUDIO_EXTS
+from transcribe import transcribe_audio as _transcribe_audio
 
 # Phase 2: Group Management
 from whatsapp import add_group_members as whatsapp_add_group_members
@@ -66,9 +69,6 @@ from whatsapp import unlink_account as whatsapp_unlink_account
 from whatsapp import update_blocklist as whatsapp_update_blocklist
 from whatsapp import update_group as whatsapp_update_group
 
-from transcribe import AUDIO_EXTS as _AUDIO_EXTS
-from transcribe import transcribe_audio as _transcribe_audio
-
 _INLINE_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 # Initialize FastMCP server
@@ -106,6 +106,7 @@ ALL_TOOLSETS = {
     "presence",
     "account_admin",
     "newsletter",
+    "espelho",
 }
 DEFAULT_TOOLSETS = set(ALL_TOOLSETS)
 ENABLED_TOOLSETS = {
@@ -897,6 +898,91 @@ def _bridge_get(path: str) -> dict[str, Any]:
         return r.json()
     except Exception as exc:
         return {"error": str(exc)}
+
+
+# Fork-local (fase 3 do espelho): consultas ao Postgres do espelho, com os áudios já transcritos e
+# sem passar pela ponte. Toolset "espelho"; ver espelho.py.
+
+
+def _no_espelho(funcao: Any, **argumentos: Any) -> dict[str, Any]:
+    try:
+        return funcao(**argumentos)
+    except _espelho_mod.ErroEspelho as e:
+        return {"success": False, "error": str(e)}
+
+
+@tool("espelho", "Resumo do período (espelho)", read_only=True, idempotent=True, open_world=False)
+def resumo_do_periodo(
+    inicio: str,
+    fim: str | None = None,
+    conta: str | None = None,
+    classificacoes: list[str] | None = None,
+    chat: str | None = None,
+) -> dict[str, Any]:
+    """Conversas do WhatsApp num período, prontas para ler: uma linha por mensagem, por chat, com os
+    áudios já transcritos. Use no lugar de list_chats + list_messages para "o que aconteceu ontem/hoje".
+
+    Args:
+        inicio: Data (AAAA-MM-DD, o dia inteiro) ou data e hora (AAAA-MM-DDTHH:MM), hora de Porto Alegre
+        fim: Opcional. Data (inclui o dia) ou data e hora (exclusiva). Sem fim: um dia a partir do início
+        conta: Número do WhatsApp no espelho (padrão: o do Camillo). Ver contas com consultar_espelho
+        classificacoes: Quais chats entram: trabalho, pessoal, ruido, a_classificar
+            (padrão: trabalho, pessoal e a_classificar; o ruído fica de fora)
+        chat: Opcional. Nome (parte dele) ou JID de um chat só
+
+    Returns:
+        chats (com as linhas "HH:MM Quem: texto"), total_mensagens, audios_sem_transcricao e truncado.
+        Se truncado, os chats que não couberam vêm em chats_sem_detalhe: peça um de cada vez.
+    """
+    return _no_espelho(
+        _espelho_mod.resumo_do_periodo, inicio=inicio, fim=fim, conta=conta, classificacoes=classificacoes, chat=chat
+    )
+
+
+@tool("espelho", "Buscar no espelho", read_only=True, idempotent=True, open_world=False)
+def buscar_no_espelho(
+    texto: str,
+    conta: str | None = None,
+    desde: str | None = None,
+    ate: str | None = None,
+    chat: str | None = None,
+    limite: int = 20,
+    contexto: int = 2,
+) -> dict[str, Any]:
+    """Busca em português nas mensagens e nas transcrições dos áudios, devolvendo cada achado com as
+    mensagens vizinhas (a mensagem encontrada vem marcada com »).
+
+    Args:
+        texto: O que buscar. Aceita a sintaxe de busca web: "frase exata", -excluir, palavra OR outra
+        conta: Número do WhatsApp no espelho (padrão: o do Camillo)
+        desde: Opcional. Data (AAAA-MM-DD) ou data e hora inicial
+        ate: Opcional. Data final (inclui o dia)
+        chat: Opcional. Nome (parte dele) ou JID de um chat só
+        limite: Máximo de achados, mais recentes primeiro (até 50)
+        contexto: Mensagens antes e depois de cada achado (até 10)
+    """
+    return _no_espelho(
+        _espelho_mod.buscar, texto=texto, conta=conta, desde=desde, ate=ate, chat=chat, limite=limite, contexto=contexto
+    )
+
+
+@tool("espelho", "Consultar o espelho (SQL)", read_only=True, idempotent=True, open_world=False)
+def consultar_espelho(sql: str, conta: str | None = None, limite: int = 200) -> dict[str, Any]:
+    """SQL só de leitura no espelho, para o que as outras ferramentas não cobrem (contagens, listas de
+    chats, quem mais falou...). Uma consulta SELECT/WITH por vez, no fuso de Porto Alegre.
+
+    Tabelas (no schema da conta): chats (jid, nome, tipo, classificacao, motivo, ultima_mensagem),
+    mensagens (chat_jid, id, remetente, remetente_nome, enviada_por_mim, momento, texto, tipo_midia,
+    arquivo, resposta_a, busca tsvector), transcricoes (chat_jid, id, texto, busca), midias (chat_jid, id,
+    tipo, chave_r2, tamanho), fila (status da fila de mídias). Contas existentes:
+    SELECT substr(nspname, 7) FROM pg_namespace WHERE nspname LIKE 'conta%'.
+
+    Args:
+        sql: A consulta
+        conta: Número do WhatsApp no espelho (padrão: o do Camillo)
+        limite: Máximo de linhas (até 500)
+    """
+    return _no_espelho(_espelho_mod.consultar, sql=sql, conta=conta, limite=limite)
 
 
 @mcp.resource("whatsapp://status")

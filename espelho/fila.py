@@ -46,8 +46,8 @@ def caminho_auto(store: Path, chat_jid: str, arquivo: str | None, msg_id: str) -
     return store / _INSEGURO.sub("_", chat_jid) / _INSEGURO.sub("_", nome)
 
 
-def chave_r2(chat_jid: str, momento, msg_id: str, arquivo: Path) -> str:
-    return f"{_INSEGURO.sub('_', chat_jid)}/{momento:%Y/%m}/{_INSEGURO.sub('_', msg_id)}{arquivo.suffix.lower()}"
+def chave_r2(chat_jid: str, momento, msg_id: str, arquivo: Path, prefixo: str = "") -> str:
+    return f"{prefixo}{_INSEGURO.sub('_', chat_jid)}/{momento:%Y/%m}/{_INSEGURO.sub('_', msg_id)}{arquivo.suffix.lower()}"
 
 
 def obter_arquivo(store: Path, tarefa: dict, baixar_da_ponte) -> Path:
@@ -58,7 +58,7 @@ def obter_arquivo(store: Path, tarefa: dict, baixar_da_ponte) -> Path:
     return store / Path(relativo).relative_to("store")
 
 
-def processar_uma(pg: psycopg.Connection, store: Path, baixar_da_ponte, enviar_r2, transcrever) -> bool:
+def processar_uma(pg: psycopg.Connection, store: Path, baixar_da_ponte, enviar_r2, transcrever, prefixo: str = "") -> bool:
     """Processa a próxima tarefa pendente. Devolve False se a fila está vazia."""
     with pg.transaction():
         tarefa = pg.execute(
@@ -79,7 +79,7 @@ def processar_uma(pg: psycopg.Connection, store: Path, baixar_da_ponte, enviar_r
             with pg.transaction():  # savepoint: um erro aqui não aborta o registro da falha abaixo
                 caminho = obter_arquivo(store, t, baixar_da_ponte)
                 dados = caminho.read_bytes()
-                chave = chave_r2(chat, momento, mid, caminho)
+                chave = chave_r2(chat, momento, mid, caminho, prefixo)
                 enviar_r2(chave, dados)
                 pg.execute(
                     """INSERT INTO midias (chat_jid, id, tipo, chave_r2, tamanho, sha256)

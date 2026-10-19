@@ -57,9 +57,41 @@ def ponte(tmp_path):
 @pytest.fixture
 def pg():
     with psycopg.connect(URL, autocommit=True) as con:
-        con.execute("DROP TABLE IF EXISTS chats, mensagens, sincronizacao")
-        aplicar_migracoes(con)
+        con.execute("DROP SCHEMA IF EXISTS conta_teste CASCADE")
+        aplicar_migracoes(con, "teste")  # deixa o search_path no schema da conta
         yield con
+
+
+def test_herda_as_tabelas_do_public(ponte):
+    """O espelho de antes das contas (tabelas no public) passa inteiro para a conta herdeira."""
+    ro, _ = ponte
+    with psycopg.connect(URL, autocommit=True) as con:
+        con.execute("DROP SCHEMA IF EXISTS conta_herdeira, conta_outra CASCADE")
+        con.execute("DROP TABLE IF EXISTS public.chats, public.mensagens, public.sincronizacao, "
+                    "public.midias, public.transcricoes, public.fila")
+        con.execute("SET search_path TO public")
+        for arquivo in sorted(Path(__file__).resolve().parents[1].joinpath("migracoes").glob("*.sql")):
+            con.execute(arquivo.read_text(encoding="utf-8"))
+        sincronizar_chats(ro, con)
+        sincronizar_mensagens(ro, con)
+        aplicar_migracoes(con, "outra", herdar=False)  # outra conta não leva nada
+        assert con.execute("SELECT to_regclass('public.mensagens') IS NOT NULL").fetchone()[0]
+        aplicar_migracoes(con, "herdeira", herdar=True)
+        assert con.execute("SELECT to_regclass('public.mensagens')").fetchone()[0] is None
+        assert con.execute("SELECT count(*) FROM conta_herdeira.mensagens").fetchone()[0] == 3
+        assert con.execute("SELECT ultimo_rowid > 0 FROM conta_herdeira.sincronizacao").fetchone()[0]
+        assert con.execute("SELECT count(*) FROM conta_outra.mensagens").fetchone()[0] == 0
+        aplicar_migracoes(con, "herdeira", herdar=True)  # segunda subida: nada muda
+        assert con.execute("SELECT count(*) FROM conta_herdeira.mensagens").fetchone()[0] == 3
+        con.execute("DROP SCHEMA conta_herdeira, conta_outra CASCADE")
+
+
+def test_nome_de_conta_invalido():
+    from principal import esquema
+
+    assert esquema("armazem") == "conta_armazem"
+    with pytest.raises(ValueError):
+        esquema("Armazém; DROP")
 
 
 def test_tipo_chat():

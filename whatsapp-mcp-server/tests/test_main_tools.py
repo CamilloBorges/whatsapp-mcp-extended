@@ -35,6 +35,10 @@ ALL_TOOLS = DEFAULT_TOOLS | {
     "get_setup_qr",
     "setup_status",
     "unlink",
+    # fork-local: toolset "espelho" (fase 3)
+    "resumo_do_periodo",
+    "buscar_no_espelho",
+    "consultar_espelho",
 }
 
 
