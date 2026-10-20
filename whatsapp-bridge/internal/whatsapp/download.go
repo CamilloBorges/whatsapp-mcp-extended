@@ -73,7 +73,10 @@ func (c *Client) DownloadMessageMedia(ctx context.Context, store *database.Messa
 		return "", "", err
 	}
 	data, err := c.Client.Download(ctx, msg)
-	if errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) || errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) {
+	// Expired media doesn't always come back as 404/410: the CDN may also answer with something
+	// that fails the hash check. Any download failure (other than a cancelled request) goes to
+	// the phone.
+	if err != nil && ctx.Err() == nil {
 		newPath, retryErr := c.requestMediaReupload(ctx, store, messageID, chatJID, mediaKey)
 		if retryErr != nil {
 			return "", "", fmt.Errorf("whatsmeow download: %w; phone re-upload: %v", err, retryErr)

@@ -57,10 +57,17 @@ def herdar_public(pg: psycopg.Connection, conta: str) -> bool:
     return True
 
 
+TRAVA_MIGRACOES = 7_346_001  # pg_advisory_lock: os workers das vagas sobem juntos (visto em 20/10/2026)
+
+
 def preparar_contas(pg: psycopg.Connection) -> None:
     """A tabela public.contas (de quem é cada vaga)."""
-    pg.execute("SET search_path TO public")
-    pg.execute((MIGRACOES / "publico" / "contas.sql").read_text(encoding="utf-8"))
+    pg.execute("SELECT pg_advisory_lock(%s)", (TRAVA_MIGRACOES,))
+    try:
+        pg.execute("SET search_path TO public")
+        pg.execute((MIGRACOES / "publico" / "contas.sql").read_text(encoding="utf-8"))
+    finally:
+        pg.execute("SELECT pg_advisory_unlock(%s)", (TRAVA_MIGRACOES,))
 
 
 def papel_de_leitura(pg: psycopg.Connection, conta: str) -> None:
@@ -77,14 +84,18 @@ def papel_de_leitura(pg: psycopg.Connection, conta: str) -> None:
 def aplicar_migracoes(pg: psycopg.Connection, conta: str = CONTA_PADRAO, herdar: bool = False) -> None:
     preparar_contas(pg)
     nome = esquema(conta)
-    pg.execute(f'CREATE SCHEMA IF NOT EXISTS "{nome}"')
-    if herdar:
-        herdar_public(pg, conta)
-    pg.execute(f'SET search_path TO "{nome}"')
-    for arquivo in sorted(MIGRACOES.glob("*.sql")):
-        pg.execute(arquivo.read_text(encoding="utf-8"))
-        log.info("migração aplicada em %s: %s", nome, arquivo.name)
-    papel_de_leitura(pg, conta)
+    pg.execute("SELECT pg_advisory_lock(%s)", (TRAVA_MIGRACOES,))
+    try:
+        pg.execute(f'CREATE SCHEMA IF NOT EXISTS "{nome}"')
+        if herdar:
+            herdar_public(pg, conta)
+        pg.execute(f'SET search_path TO "{nome}"')
+        for arquivo in sorted(MIGRACOES.glob("*.sql")):
+            pg.execute(arquivo.read_text(encoding="utf-8"))
+            log.info("migração aplicada em %s: %s", nome, arquivo.name)
+        papel_de_leitura(pg, conta)
+    finally:
+        pg.execute("SELECT pg_advisory_unlock(%s)", (TRAVA_MIGRACOES,))
 
 
 def registrar_conta_fixa(pg: psycopg.Connection, conta: str, vaga: int, dono: str) -> None:
