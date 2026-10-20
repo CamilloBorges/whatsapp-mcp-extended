@@ -91,6 +91,17 @@ def test_sem_arquivo_local_pede_a_ponte_e_nao_transcreve_imagem(pg, tmp_path):
     assert processar_uma(pg, tmp_path, s.baixar, s.enviar, s.transcrever) is False  # fila vazia
 
 
+def test_conta_nova_tambem_guarda_midias_a_classificar(pg):
+    pg.execute("INSERT INTO chats (jid, nome, tipo) VALUES ('5551888880000@s.whatsapp.net', 'Novo', 'contato')")
+    pg.execute(
+        "INSERT INTO mensagens (chat_jid, id, momento, tipo_midia, arquivo, tamanho) VALUES "
+        "('5551888880000@s.whatsapp.net', 'NOVA1', now(), 'audio', 'a.ogg', 5)"
+    )
+    assert enfileirar(pg) == 2  # sem a opção: só as da Fazenda (trabalho)
+    assert enfileirar(pg, a_classificar=True) == 1  # com a opção: a do chat novo também
+    assert enfileirar(pg, a_classificar=True) == 0
+
+
 def test_conta_nova_guarda_com_prefixo(pg, tmp_path):
     s = Simulados(tmp_path)
     enfileirar(pg)

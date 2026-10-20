@@ -61,6 +61,26 @@ func (store *MessageStore) GetMessageMedia(id, chatJID string) (mediaType, filen
 	return
 }
 
+// GetMessageOrigin returns who sent a stored message (fork-local, used to ask the phone to
+// re-upload expired media). sender may be a bare user ("5551...") or a full JID.
+func (store *MessageStore) GetMessageOrigin(id, chatJID string) (sender string, isFromMe bool, err error) {
+	row := store.db.QueryRow(
+		`SELECT COALESCE(sender,''), COALESCE(is_from_me,0) FROM messages WHERE id = ? AND chat_jid = ?`,
+		id, chatJID,
+	)
+	err = row.Scan(&sender, &isFromMe)
+	return
+}
+
+// UpdateMediaDirectPath stores the direct path the phone gave after a media re-upload.
+func (store *MessageStore) UpdateMediaDirectPath(id, chatJID, directPath string) error {
+	_, err := store.db.Exec(
+		`UPDATE messages SET direct_path = ?, url = '' WHERE id = ? AND chat_jid = ?`,
+		directPath, id, chatJID,
+	)
+	return err
+}
+
 // GetMessages gets messages from a chat
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]types.Message, error) {
 	rows, err := store.db.Query(

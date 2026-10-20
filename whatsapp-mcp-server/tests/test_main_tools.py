@@ -42,6 +42,8 @@ ALL_TOOLS = DEFAULT_TOOLS | {
     "adicionar_numero",
     "status_do_numero",
     "remover_numero",
+    "classificar_chat",
+    "midia_da_mensagem",
 }
 
 

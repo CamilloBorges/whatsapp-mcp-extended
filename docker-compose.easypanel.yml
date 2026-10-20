@@ -165,6 +165,8 @@ services:
       # Vagas: ponte de cada uma (a 1 é a do Camillo; a 2, reserva). Para ter mais vagas, repetir
       # whatsapp-bridge-2 e espelho-worker-2 com outro número e acrescentar aqui.
       - 'ESPELHO_VAGAS={"1": "http://whatsapp-bridge:8080", "2": "http://whatsapp-bridge-2:8080"}'
+      # Onde o volume de cada ponte está montado aqui (midia_da_mensagem lê o arquivo baixado).
+      - 'ESPELHO_STORES={"1": "/app/store", "2": "/app/store2"}'
       # Identidade: aplicação do Access do Hub (cerebro-mcp, com o e-mail da pessoa) e a deste
       # MCP (whatsapp-mcp, acesso direto pelo token de serviço do Camillo).
       - ACESSO_AUD_HUB=${CEREBRO_ACCESS_AUD:-3e41d1a988a0fdc66f1eed34e39732411495c396c6c3a6459e36ee1dedbffe6b}
@@ -183,6 +185,7 @@ services:
       - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-pt}
     volumes:
       - whatsapp-store:/app/store
+      - whatsapp-store-2:/app/store2:ro
       - ./infra/segredos/com_segredos.sh:/usr/local/bin/com_segredos.sh:ro
       - segredos-mcp:/run/segredos:ro
     healthcheck:

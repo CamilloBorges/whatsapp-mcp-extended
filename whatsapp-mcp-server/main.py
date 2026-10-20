@@ -1042,6 +1042,48 @@ def remover_numero(conta: str, confirmar: bool = False) -> dict[str, Any]:
     return _no_espelho(_numeros_mod.remover, conta=conta, confirmar=confirmar)
 
 
+@tool("espelho", "Classificar chats do WhatsApp", read_only=False, idempotent=True, open_world=False)
+def classificar_chat(
+    chats: list[str], classificacao: str, conta: str | None = None, motivo: str | None = None
+) -> dict[str, Any]:
+    """Classifica chats de um dos seus números. A classificação decide o que o espelho guarda:
+    trabalho e pessoal: texto, mídias e áudios transcritos; ruido: só o texto (e fica fora do
+    resumo_do_periodo); ignorar: as mensagens novas deixam de entrar; a_classificar: volta ao início.
+    Para escolher, liste os chats com consultar_espelho (SELECT jid, nome, classificacao,
+    ultima_mensagem FROM chats ORDER BY ultima_mensagem DESC). Sugira em lote e peça a confirmação
+    da pessoa antes de classificar.
+
+    Args:
+        chats: JIDs ou nomes exatos dos chats (até 200)
+        classificacao: trabalho, pessoal, ruido, ignorar ou a_classificar
+        conta: Opcional. Qual dos seus números; padrão: o primeiro
+        motivo: Opcional. Por que (fica registrado no chat)
+    """
+    return _no_espelho(_espelho_mod.classificar, chats=chats, classificacao=classificacao, conta=conta, motivo=motivo)
+
+
+@tool("espelho", "Mídia de uma mensagem (espelho)", read_only=False, idempotent=True, open_world=True)
+def midia_da_mensagem(chat_jid: str, message_id: str, conta: str | None = None) -> Any:
+    """Busca a mídia de uma mensagem na ponte do seu número: foto (vem na resposta), áudio
+    (transcrito e guardado no espelho) ou documento/vídeo (caminho do arquivo). Use quando o
+    resumo_do_periodo mostrar só a etiqueta ([áudio], [foto]) sem o conteúdo. Se o servidor do
+    WhatsApp já apagou a mídia, a ponte pede ao celular que reenvie: o celular precisa estar ligado
+    e ainda ter o arquivo (pode levar até ~45 s).
+
+    Args:
+        chat_jid: JID do chat (vem no buscar_no_espelho ou no consultar_espelho)
+        message_id: ID da mensagem
+        conta: Opcional. Qual dos seus números; padrão: o primeiro
+    """
+    resultado = _no_espelho(
+        _numeros_mod.midia, chat_jid=chat_jid, message_id=message_id, conta=conta, transcrever=_transcribe_audio
+    )
+    arquivo = resultado.get("arquivo") if isinstance(resultado, dict) else None
+    if arquivo and Path(arquivo).suffix.lower() in _INLINE_IMAGE_EXTS and Path(arquivo).exists():
+        return [Image(path=arquivo), resultado]
+    return resultado
+
+
 @mcp.resource("whatsapp://status")
 def resource_status() -> str:
     """Live bridge connection state — connected, needs_pairing, disconnected_for."""

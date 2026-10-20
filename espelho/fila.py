@@ -22,20 +22,22 @@ log = logging.getLogger("espelho.fila")
 _INSEGURO = re.compile(r"[^a-zA-Z0-9._-]")
 
 
-def enfileirar(pg: psycopg.Connection, dias: int = DIAS_MAX) -> int:
-    """Põe na fila as mídias ainda não guardadas dos chats trabalho/pessoal; devolve quantas entraram."""
+def enfileirar(pg: psycopg.Connection, dias: int = DIAS_MAX, a_classificar: bool = False) -> int:
+    """Põe na fila as mídias ainda não guardadas dos chats trabalho/pessoal (e dos "a classificar",
+    se a conta pedir: conta nova, ainda sem classificação); devolve quantas entraram."""
+    classes = ["trabalho", "pessoal"] + (["a_classificar"] if a_classificar else [])
     cur = pg.execute(
         """
         INSERT INTO fila (chat_jid, id)
         SELECT m.chat_jid, m.id
         FROM mensagens m
-        JOIN chats c ON c.jid = m.chat_jid AND c.classificacao IN ('trabalho', 'pessoal')
+        JOIN chats c ON c.jid = m.chat_jid AND c.classificacao = ANY(%s)
         WHERE m.tipo_midia = ANY(%s)
           AND m.momento > now() - make_interval(days => %s)
           AND NOT EXISTS (SELECT 1 FROM midias d WHERE d.chat_jid = m.chat_jid AND d.id = m.id)
         ON CONFLICT DO NOTHING
         """,
-        (list(TIPOS), dias),
+        (classes, list(TIPOS), dias),
     )
     return cur.rowcount
 

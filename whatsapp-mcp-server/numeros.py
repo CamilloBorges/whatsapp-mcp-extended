@@ -19,7 +19,7 @@ from typing import Any
 
 import requests
 
-from espelho import ErroEspelho, _ler, conectar, conta_de, contas_de, nome_de_conta
+from espelho import ErroEspelho, _ler, conectar, conta_de, contas_de, guardar_transcricao, nome_de_conta
 
 INSTRUCOES = [
     "No celular desse número, abra o WhatsApp.",
@@ -34,14 +34,14 @@ def vagas() -> dict[int, str]:
     return {int(v): url.rstrip("/") for v, url in json.loads(os.getenv("ESPELHO_VAGAS") or "{}").items()}
 
 
-def _ponte(vaga: int, metodo: str, caminho: str, corpo: dict | None = None) -> dict[str, Any]:
+def _ponte(vaga: int, metodo: str, caminho: str, corpo: dict | None = None, timeout: int = 60) -> dict[str, Any]:
     url = vagas().get(vaga)
     if not url:
         raise ErroEspelho(f"a vaga {vaga} não está configurada neste servidor")
     chave = os.getenv("API_KEY") or os.getenv("WHATSAPP_API_KEY")
     try:
         r = requests.request(
-            metodo, f"{url}{caminho}", json=corpo, headers={"X-API-Key": chave} if chave else {}, timeout=60
+            metodo, f"{url}{caminho}", json=corpo, headers={"X-API-Key": chave} if chave else {}, timeout=timeout
         )
         dados = r.json()
     except (requests.RequestException, ValueError) as e:
@@ -137,6 +137,60 @@ def status(pessoa: str | None, conta: str | None = None) -> dict[str, Any]:
 def _vagas_ocupadas() -> set[int]:
     with conectar() as con:
         return {v for (v,) in con.execute("SELECT vaga FROM public.contas WHERE vaga IS NOT NULL")}
+
+
+def _arquivo_local(vaga: int, caminho_na_ponte: str) -> str:
+    """O caminho que a ponte devolve ("store/media/..." ou "/app/whatsapp-bridge/store/media/...")
+    no volume dela montado aqui (ESPELHO_STORES: {"1": "/app/store", "2": "/app/store2"})."""
+    raiz = json.loads(os.getenv("ESPELHO_STORES") or "{}").get(str(vaga))
+    if not raiz:
+        raise ErroEspelho(f"o volume da vaga {vaga} não está montado neste servidor (ESPELHO_STORES)")
+    partes = caminho_na_ponte.replace("\\", "/").split("/")
+    if "store" not in partes:
+        raise ErroEspelho(f"caminho inesperado da ponte: {caminho_na_ponte!r}")
+    relativo = partes[partes.index("store") + 1 :]
+    if ".." in relativo:
+        raise ErroEspelho("caminho inválido")
+    return os.path.join(raiz, *relativo)
+
+
+def midia(pessoa: str | None, chat_jid: str, message_id: str, conta: str | None = None, transcrever=None) -> dict:
+    """Busca a mídia de uma mensagem na ponte da conta de quem chama (se o servidor do WhatsApp já
+    apagou, a ponte pede ao celular que reenvie). Áudio: transcreve e guarda no espelho."""
+    conta = conta_de(pessoa, conta)
+    vaga = next(c["vaga"] for c in contas_de(pessoa) if c["conta"] == conta)
+    if vaga is None:
+        raise ErroEspelho(f"a conta {conta!r} não tem mais vaga")
+    _, linhas, _ = _ler(
+        conta,
+        """SELECT m.tipo_midia, m.arquivo, t.texto FROM mensagens m
+           LEFT JOIN transcricoes t ON t.chat_jid = m.chat_jid AND t.id = m.id
+           WHERE m.chat_jid = %s AND m.id = %s""",
+        (chat_jid, message_id),
+    )
+    if not linhas:
+        raise ErroEspelho("mensagem não encontrada no espelho da sua conta")
+    tipo, arquivo, transcricao = linhas[0]
+    if not tipo:
+        raise ErroEspelho("essa mensagem não tem mídia")
+    resultado: dict[str, Any] = {"conta": conta, "chat_jid": chat_jid, "message_id": message_id, "tipo": tipo}
+    if arquivo:
+        resultado["nome_original"] = arquivo
+    # até 45 s esperando o celular reenviar uma mídia que o servidor do WhatsApp já apagou
+    baixado = _ponte(vaga, "POST", "/api/download", {"message_id": message_id, "chat_jid": chat_jid}, timeout=120)
+    resultado["arquivo"] = _arquivo_local(vaga, baixado.get("path") or "")
+    resultado["via_celular"] = bool(baixado.get("via_celular"))
+    if tipo == "audio":
+        if transcricao:
+            resultado["transcricao"] = transcricao
+        elif transcrever:
+            r = transcrever(resultado["arquivo"])
+            if "text" in r:
+                resultado["transcricao"] = r["text"]
+                guardar_transcricao(conta, chat_jid, message_id, r["text"], r.get("language"))
+            else:
+                resultado["erro_transcricao"] = r.get("error", "erro desconhecido")
+    return resultado
 
 
 def remover(pessoa: str | None, conta: str, confirmar: bool = False) -> dict[str, Any]:

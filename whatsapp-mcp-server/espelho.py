@@ -175,7 +175,7 @@ def resumo_do_periodo(
         f"""
         SELECT c.jid, coalesce(nullif(trim(c.nome), ''), c.jid), c.tipo, c.classificacao,
                m.momento, m.enviada_por_mim, coalesce(nullif(m.remetente_nome, ''), m.remetente),
-               m.texto, m.tipo_midia, m.arquivo, t.texto
+               m.texto, m.tipo_midia, m.arquivo, t.texto, m.id
         FROM mensagens m
         JOIN chats c ON c.jid = m.chat_jid
         LEFT JOIN transcricoes t ON t.chat_jid = m.chat_jid AND t.id = m.id
@@ -187,13 +187,14 @@ def resumo_do_periodo(
 
     varios_dias = b - a > timedelta(days=1)
     chats: dict[str, dict[str, Any]] = {}
-    for jid, nome, tipo, classe, momento, de_mim, remetente, texto, midia, arquivo, transcricao in linhas:
+    for jid, nome, tipo, classe, momento, de_mim, remetente, texto, midia, arquivo, transcricao, mid in linhas:
         if not texto and not midia and not transcricao:
             continue
         item = chats.setdefault(
             jid,
             {
                 "chat": nome,
+                "chat_jid": jid,
                 "tipo": tipo,
                 "classificacao": classe,
                 "mensagens": 0,
@@ -203,6 +204,11 @@ def resumo_do_periodo(
         )
         item["mensagens"] += 1
         item["audios_transcritos"] += 1 if transcricao else 0
+        if midia == "audio" and not transcricao:
+            # áudio ainda sem transcrição: midia_da_mensagem(chat_jid, message_id) busca e transcreve
+            item.setdefault("audios_sem_transcricao", []).append(
+                {"message_id": mid, "hora": momento.strftime("%d/%m %H:%M")}
+            )
         item["linhas"].append(
             _linha(momento, _quem(de_mim, remetente, nome, tipo), texto, midia, arquivo, transcricao, varios_dias)
         )
@@ -305,6 +311,60 @@ def buscar(
             }
         )
     return {"conta": conta, "busca": texto, "resultados": resultados, "ha_mais": mais}
+
+
+CLASSIFICAVEIS = ("trabalho", "pessoal", "ruido", "ignorar", "a_classificar")
+
+
+def classificar(
+    pessoa: str | None, chats: list[str], classificacao: str, conta: str | None = None, motivo: str | None = None
+) -> dict[str, Any]:
+    """Classifica chats da própria conta (pelo JID ou pelo nome exato, sem diferenciar maiúsculas).
+    trabalho/pessoal: mídias guardadas e áudios transcritos; ruido: só o texto; ignorar: as
+    mensagens novas deixam de entrar no espelho."""
+    conta = conta_de(pessoa, conta)
+    if classificacao not in CLASSIFICAVEIS:
+        raise ErroEspelho(f"classificação inválida: {classificacao!r} (use {', '.join(CLASSIFICAVEIS)})")
+    pedidos = [c.strip() for c in (chats or []) if c and c.strip()]
+    if not pedidos:
+        raise ErroEspelho("informe pelo menos um chat (JID ou nome exato)")
+    if len(pedidos) > 200:
+        raise ErroEspelho("no máximo 200 chats por vez")
+    feitos, nao_achados = [], []
+    with conectar() as con, con.transaction():
+        con.execute(f'SET LOCAL search_path = "conta_{conta}"')
+        for pedido in pedidos:
+            linhas = con.execute(
+                """UPDATE chats SET classificacao = %s, classificado_por = %s, motivo = coalesce(%s, motivo),
+                          classificado_em = now(), atualizado_em = now()
+                   WHERE jid = %s OR lower(trim(nome)) = lower(%s)
+                   RETURNING coalesce(nullif(trim(nome), ''), jid)""",
+                (classificacao, pessoa.lower(), motivo, pedido, pedido),
+            ).fetchall()
+            if linhas:
+                feitos.extend(nome for (nome,) in linhas)
+            else:
+                nao_achados.append(pedido)
+    return {
+        "conta": conta,
+        "classificacao": classificacao,
+        "classificados": feitos,
+        "nao_encontrados": nao_achados,
+        "aviso": "As mídias recentes dos chats de trabalho e pessoal entram na fila em até 1 minuto."
+        if classificacao in ("trabalho", "pessoal")
+        else None,
+    }
+
+
+def guardar_transcricao(conta: str, chat_jid: str, message_id: str, texto: str, idioma: str | None) -> None:
+    conta = nome_de_conta(conta)
+    with conectar() as con, con.transaction():
+        con.execute(f'SET LOCAL search_path = "conta_{conta}"')
+        con.execute(
+            """INSERT INTO transcricoes (chat_jid, id, texto, idioma) VALUES (%s, %s, %s, %s)
+               ON CONFLICT (chat_jid, id) DO UPDATE SET texto = EXCLUDED.texto, idioma = EXCLUDED.idioma""",
+            (chat_jid, message_id, texto, idioma),
+        )
 
 
 def consultar(pessoa: str | None, sql: str, conta: str | None = None, limite: int = 200) -> dict[str, Any]:

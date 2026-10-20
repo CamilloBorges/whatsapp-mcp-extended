@@ -1,6 +1,7 @@
 """Ferramentas do espelho (fase 3) e posse das contas. Precisam de um Postgres descartável em
 ESPELHO_TEST_DB_URL."""
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -181,6 +182,9 @@ class PontesSimuladas:
             corpo |= {"in_progress": True, "expires_in": 120}
         elif caminho == "/api/logout":
             self.pareadas.discard(vaga)
+        elif caminho == "/api/download":
+            corpo |= {"path": f"/app/whatsapp-bridge/store/media/{json['chat_jid']}/{json['message_id']}.ogg"}
+            corpo["via_celular"] = getattr(self, "via_celular", False)
 
         class Resposta:
             status_code = 200
@@ -244,6 +248,70 @@ def test_telefone_invalido(vagas):
     numeros, _ = vagas
     with pytest.raises(espelho.ErroEspelho, match="telefone inválido"):
         numeros.adicionar("Ana", "1234", "ana")
+
+
+def test_classificar_so_os_chats_da_propria_conta(banco):
+    r = espelho.classificar("Camillo", ["operacional fazenda", FORNECEDOR, "Não existe"], "pessoal", motivo="teste")
+    assert sorted(r["classificados"]) == ["Fornecedor Carne", "Operacional Fazenda"]
+    assert r["nao_encontrados"] == ["Não existe"]
+    assert banco.execute(
+        "SELECT classificacao, classificado_por, motivo FROM chats WHERE jid = %s", (FAZENDA,)
+    ).fetchone() == (
+        "pessoal",
+        "camillo",
+        "teste",
+    )
+    with pytest.raises(espelho.ErroEspelho, match="não é sua"):
+        espelho.classificar("Ana", [FAZENDA], "ruido", conta="teste")
+    assert espelho.classificar("Ana", [FAZENDA], "ruido")["nao_encontrados"] == [FAZENDA]  # na conta dela não existe
+    with pytest.raises(espelho.ErroEspelho, match="inválida"):
+        espelho.classificar("Camillo", [FAZENDA], "importante")
+
+
+def test_midia_da_mensagem_busca_na_ponte_da_conta_e_guarda_a_transcricao(banco, monkeypatch, tmp_path):
+    import numeros
+
+    pontes = PontesSimuladas()
+    monkeypatch.setattr(numeros.requests, "request", pontes)
+    monkeypatch.setenv("ESPELHO_VAGAS", '{"1": "http://whatsapp-bridge:8080", "2": "http://whatsapp-bridge-2:8080"}')
+    monkeypatch.setenv("ESPELHO_STORES", json.dumps({"1": str(tmp_path)}))
+    banco.execute(
+        "INSERT INTO mensagens (chat_jid, id, momento, tipo_midia, arquivo) VALUES (%s, 'A9', '2026-10-19 09:30', 'audio', 'a9.ogg')",
+        (FAZENDA,),
+    )
+    transcritos = []
+
+    def transcrever(caminho):
+        transcritos.append(caminho)
+        return {"text": "Chegou o sal mineral", "language": "pt"}
+
+    pontes.via_celular = True
+    r = numeros.midia("Camillo", FAZENDA, "A9", transcrever=transcrever)
+    assert r["transcricao"] == "Chegou o sal mineral" and r["via_celular"] is True
+    assert r["arquivo"] == os.path.join(str(tmp_path), "media", FAZENDA, "A9.ogg")
+    assert (1, "POST", "/api/download", {"message_id": "A9", "chat_jid": FAZENDA}) in pontes.pedidos
+    assert banco.execute("SELECT texto FROM transcricoes WHERE id = 'A9'").fetchone()[0] == "Chegou o sal mineral"
+    # o resumo passa a mostrar o áudio transcrito; antes, ele vinha em audios_sem_transcricao
+    fazenda = espelho.resumo_do_periodo("Camillo", "2026-10-19")["chats"][0]
+    assert any(linha.endswith("[áudio] Chegou o sal mineral") for linha in fazenda["linhas"])
+    assert "audios_sem_transcricao" not in fazenda
+    # áudio já transcrito: não transcreve de novo
+    numeros.midia("Camillo", FAZENDA, "A9", transcrever=transcrever)
+    assert len(transcritos) == 1
+    with pytest.raises(espelho.ErroEspelho, match="não encontrada"):
+        numeros.midia("Ana", FAZENDA, "A9", transcrever=transcrever)  # a mensagem não é da conta dela
+    with pytest.raises(espelho.ErroEspelho, match="não tem mídia"):
+        numeros.midia("Camillo", FAZENDA, "A1", transcrever=transcrever)
+
+
+def test_resumo_lista_os_audios_sem_transcricao(banco):
+    banco.execute(
+        "INSERT INTO mensagens (chat_jid, id, momento, tipo_midia, arquivo) VALUES (%s, 'A8', '2026-10-19 09:20', 'audio', 'a8.ogg')",
+        (FAZENDA,),
+    )
+    fazenda = espelho.resumo_do_periodo("Camillo", "2026-10-19")["chats"][0]
+    assert fazenda["chat_jid"] == FAZENDA
+    assert fazenda["audios_sem_transcricao"] == [{"message_id": "A8", "hora": "19/10 09:20"}]
 
 
 # ---- identidade (identidade.py) ------------------------------------------------------------------

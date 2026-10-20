@@ -125,7 +125,8 @@ def ciclo_fila(url: str, conta: str, store: Path, segundos: int, clientes, prefi
     fim = time.monotonic() + segundos
     feitas = 0
     with conectar(url, conta) as pg:
-        novas = enfileirar(pg)
+        linha = pg.execute("SELECT midias_a_classificar FROM public.contas WHERE conta = %s", (conta,)).fetchone()
+        novas = enfileirar(pg, a_classificar=bool(linha and linha[0]))
         while time.monotonic() < fim and processar_uma(pg, store, baixar, enviar, transcrever, prefixo):
             feitas += 1
     if novas or feitas:
@@ -162,6 +163,13 @@ def main() -> None:
                 if atual:
                     with psycopg.connect(url, autocommit=True) as pg:
                         aplicar_migracoes(pg, atual, herdar=atual == herdeira)
+                        # Conta nova (vaga reserva) nasce sem classificação: guardar também as
+                        # mídias dos chats "a classificar". A conta fixa já foi classificada.
+                        pg.execute(
+                            "UPDATE public.contas SET midias_a_classificar = %s "
+                            "WHERE conta = %s AND midias_a_classificar IS NULL",
+                            (not conta_fixa, atual),
+                        )
                     log.info("vaga %s: conta %s (schema %s)", vaga, atual, esquema(atual))
                 else:
                     log.info("vaga %s livre: aguardando um número (adicionar_numero)", vaga)

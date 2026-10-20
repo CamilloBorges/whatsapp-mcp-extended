@@ -12,3 +12,8 @@ CREATE TABLE IF NOT EXISTS public.contas (
     atualizada_em timestamptz NOT NULL DEFAULT now()
 );
 REVOKE ALL ON public.contas FROM PUBLIC;
+
+-- A fila de mídias também pega os chats "a classificar"? Uma conta nova nasce com todos os chats
+-- sem classificação; sem isso, nenhuma mídia dela seria guardada. NULL = o worker decide na
+-- 1ª subida: falso para a conta fixa da vaga (já classificada), verdadeiro para as outras.
+ALTER TABLE public.contas ADD COLUMN IF NOT EXISTS midias_a_classificar boolean;

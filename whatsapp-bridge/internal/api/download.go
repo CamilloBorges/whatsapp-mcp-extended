@@ -81,8 +81,14 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info, ok := hkdfInfo[mediaType]
-	if !ok || url == "" || len(mediaKey) == 0 {
+	if !ok || len(mediaKey) == 0 {
 		SendJSONError(w, "no downloadable media for this message", http.StatusBadRequest)
+		return
+	}
+	// Fork-local: media the CDN no longer has (404/410) is asked back from the phone; after a
+	// re-upload the stored URL is cleared and only the new direct path is kept.
+	if url == "" {
+		s.downloadViaPhone(w, r, req)
 		return
 	}
 
@@ -100,6 +106,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		s.downloadViaPhone(w, r, req)
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		SendJSONError(w, fmt.Sprintf("CDN returned HTTP %d", resp.StatusCode), http.StatusBadGateway)
 		return
@@ -194,6 +204,28 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"path":    outPath,
 		"size":    len(plain),
+	})
+}
+
+// downloadViaPhone downloads through whatsmeow, which asks the phone to re-upload media the CDN
+// already dropped (the phone must be online and still have the file). Same response shape.
+func (s *Server) downloadViaPhone(w http.ResponseWriter, r *http.Request, req downloadRequest) {
+	path, _, err := s.client.DownloadMessageMedia(r.Context(), s.messageStore,
+		filepath.Join(config.StoreDir(), "media"), req.MessageID, req.ChatJID)
+	if err != nil {
+		SendJSONError(w, "media expired on WhatsApp's CDN and the phone re-upload failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	size := int64(0)
+	if st, statErr := os.Stat(path); statErr == nil {
+		size = st.Size()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":     true,
+		"path":        path,
+		"size":        size,
+		"via_celular": true,
 	})
 }
 
